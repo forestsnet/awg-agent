@@ -278,9 +278,19 @@ async def client_usage(key: str, days: int = 30) -> dict[str, Any]:
     client = store.find(key)
     if not client:
         raise HTTPException(status_code=404, detail="Клиент не найден")
+    # Отдаём вместе с лимитом: иначе вызывающему нужен второй запрос за
+    # списком клиентов, чтобы показать «2 из 10 ГБ».
     return {
         "days": _usage_series(client.get("history") or {}, days),
         "total": int(client.get("traffic_total") or 0),
+        "quotaUsed": int(client.get("quota_used") or 0),
+        "quotaBytes": int(client.get("quota_bytes") or 0),
+        "quotaPeriod": client.get("quota_period") or "none",
+        "quotaResetAt": _quota_reset_at(client),
+        "expiresAt": client.get("expires_at"),
+        "rateBps": int(client.get("rate_bps") or 0),
+        "enabled": bool(client.get("enabled", True)),
+        "disabledReason": client.get("disabled_reason"),
     }
 
 
