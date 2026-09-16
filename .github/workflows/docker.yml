@@ -19,6 +19,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # Ставим зависимости целиком, а не только те, что нужны тестам:
+      # так заодно видно, что requirements.txt вообще разрешается.
+      - run: pip install -r requirements.txt
       - run: python3 -m tests.test_agent
 
   build:
