@@ -187,13 +187,24 @@ document.addEventListener('visibilitychange', () => {
 /* ── Отрисовка ──────────────────────────────────────────────────── */
 
 function renderHealth(h) {
-  const bits = [h.interface, `протокол ${h.protocol ?? '—'}`];
-  if (h.header_protection) bits.push('header protection');
-  if (h.random_trailers) bits.push('random trailers');
-  if (h.disable_cookies) bits.push('cookies off');
-  setText($('server-info'), bits.join(' · '));
+  // В подзаголовке — то, что спрашивают чаще всего: куда подключаться.
+  // Раньше здесь висел список включённых параметров обфускации: читать
+  // его каждый раз незачем, а места он занимал больше, чем всё
+  // остальное вместе.
+  setText($('server-info'), [h.interface, h.endpoint].filter(Boolean).join(' · '));
+
+  // Поколение протокола — короткой пилюлей, подробности в подсказке.
+  const badge = $('proto-badge');
+  const extras = [];
+  if (h.header_protection) extras.push('HeaderProtectionKey');
+  if (h.random_trailers) extras.push('RandomTrailers');
+  if (h.disable_cookies) extras.push('DisableCookies');
+  const gen = h.protocol === 3 ? (h.random_trailers || h.disable_cookies ? '3.1' : '3.0') : '2.0';
+  setText(badge, `AWG ${gen}`);
+  badge.title = extras.length ? extras.join(', ') : 'Jc, S1–S4, H1–H4, I1–I5';
+
   $('iface-state').classList.toggle('down', !h.up);
-  setText($('iface-text'), h.up ? 'интерфейс поднят' : 'интерфейс не поднят');
+  setText($('iface-text'), h.up ? 'активен' : 'не запущен');
 }
 
 function renderStats() {
@@ -370,7 +381,7 @@ $('rows').addEventListener('click', async (e) => {
     if (el.dataset.act === 'del') {
       return askConfirm(
         `Удалить «${client.name}»?`,
-        'Конфиг перестанет работать сразу. Восстановить его нельзя — только выдать новый.',
+        'Конфиг перестанет работать сразу, восстановить его нельзя.',
         'Удалить',
         async () => {
           await api(`/api/wireguard/client/${id}`, { method: 'DELETE' });

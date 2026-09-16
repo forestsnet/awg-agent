@@ -226,6 +226,7 @@ async def health() -> dict[str, Any]:
         "ok": True,
         "agent": __version__,
         "interface": config.WG_INTERFACE,
+        "endpoint": f"{config.WG_HOST}:{config.WG_CONFIG_PORT}" if config.WG_HOST else None,
         "up": await awg.is_up(),
         "protocol": params.get("proto"),
         "header_protection": bool(params.get("header_protection_key")),
