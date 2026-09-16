@@ -119,8 +119,12 @@ header{
   text-overflow:ellipsis;font-family:var(--font-mono);letter-spacing:0}
 .actions{display:flex;gap:10px;align-items:center;flex:none}
 .actions .search{position:relative;display:flex;align-items:center;min-width:0}
-.actions .search svg{position:absolute;left:13px;color:var(--text-secondary);pointer-events:none}
-.actions .search input{padding-left:38px;width:220px;min-width:0}
+/* Абсолютом позиционируем обёртку, а не сам svg: у svg нет своей
+   строки, и он вставал по «статической позиции» спана — то есть ниже
+   середины поля. Лупа съезжала вниз относительно текста. */
+.actions .search .ic{position:absolute;left:14px;top:50%;transform:translateY(-50%);
+  display:flex;color:var(--text-secondary);pointer-events:none}
+.actions .search input{padding-left:40px;width:220px;min-width:0}
 .badge-proto{flex:none;padding:4px 11px;border-radius:999px;font-size:12.5px;font-weight:600;
   background:var(--backgrounds-secondary);color:var(--text-secondary);cursor:default;
   white-space:nowrap}
