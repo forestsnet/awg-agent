@@ -8,7 +8,14 @@ from . import config, proto
 
 
 def subnet() -> ipaddress.IPv4Network:
-    """Сеть из WG_DEFAULT_ADDRESS вида 10.8.0.x."""
+    """Сеть клиентов.
+
+    WG_SUBNET задаётся целиком (`10.8.0.0/16`) — это способ выйти за 253
+    адреса, не поднимая второго агента. Если не задана, берём /24 вокруг
+    WG_DEFAULT_ADDRESS, как было раньше.
+    """
+    if config.WG_SUBNET:
+        return ipaddress.ip_network(config.WG_SUBNET, strict=False)
     base = config.WG_DEFAULT_ADDRESS.replace("x", "0")
     return ipaddress.ip_network(f"{base}/24", strict=False)
 
@@ -18,8 +25,15 @@ def server_address() -> str:
 
 
 def next_address(taken: set[str]) -> str:
-    """Первый свободный адрес после серверного."""
-    for host in list(subnet().hosts())[1:]:
+    """Первый свободный адрес после серверного.
+
+    Идём генератором, а не списком: в /16 адресов шестьдесят пять тысяч,
+    и материализовать их в список ради одного свободного — пустая трата
+    памяти на каждом создании клиента.
+    """
+    hosts = subnet().hosts()
+    next(hosts, None)  # первый адрес занят сервером
+    for host in hosts:
         if str(host) not in taken:
             return str(host)
     raise RuntimeError("свободные адреса в подсети кончились")
@@ -36,9 +50,12 @@ def server_conf(server: dict[str, Any], clients: list[dict[str, Any]]) -> str:
     ]
     if config.WG_MTU:
         lines.append(f"MTU = {config.WG_MTU}")
-    lines += proto.interface_lines(params)
-    if server.get("i1"):
-        lines.append(f"I1 = {server['i1']}")
+    # В режиме обычного WireGuard строк обфускации нет вовсе: wg-quick
+    # падает на незнакомом параметре, а не игнорирует его.
+    if config.IS_AWG:
+        lines += proto.interface_lines(params)
+        if server.get("i1"):
+            lines.append(f"I1 = {server['i1']}")
 
     net = f"{subnet().network_address}/{subnet().prefixlen}"
     lines += [
@@ -90,9 +107,10 @@ def client_conf(server: dict[str, Any], client: dict[str, Any]) -> str:
     ]
     if config.WG_MTU:
         lines.append(f"MTU = {config.WG_MTU}")
-    lines += proto.interface_lines(params)
-    if client.get("i1"):
-        lines.append(f"I1 = {client['i1']}")
+    if config.IS_AWG:
+        lines += proto.interface_lines(params)
+        if client.get("i1"):
+            lines.append(f"I1 = {client['i1']}")
     lines += [
         "",
         "[Peer]",

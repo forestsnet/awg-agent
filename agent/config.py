@@ -38,10 +38,25 @@ WG_PORT = _int("WG_PORT", 51820)
 WG_CONFIG_PORT = _int("WG_CONFIG_PORT", WG_PORT)
 WG_DEVICE = os.environ.get("WG_DEVICE", "eth0")
 WG_DEFAULT_ADDRESS = os.environ.get("WG_DEFAULT_ADDRESS", "10.8.0.x")
+# Подсеть клиентов целиком. Нужна ради тех, кому мало 253 адресов:
+# /16 даёт 65 тысяч, и второй агент ради этого поднимать не приходится.
+# Пусто — берём /24 вокруг WG_DEFAULT_ADDRESS, как было.
+WG_SUBNET = os.environ.get("WG_SUBNET", "").strip()
 WG_DEFAULT_DNS = os.environ.get("WG_DEFAULT_DNS", "1.1.1.1")
 WG_ALLOWED_IPS = os.environ.get("WG_ALLOWED_IPS", "0.0.0.0/0, ::/0")
 WG_PERSISTENT_KEEPALIVE = _int("WG_PERSISTENT_KEEPALIVE", 25)
 WG_MTU = os.environ.get("WG_MTU", "").strip()
+
+# ── Протокол ────────────────────────────────────────────────────────
+# `awg` — AmneziaWG с обфускацией, `wg` — обычный WireGuard. Отличий по
+# сути два: набор строк в конфиге и имя утилиты. Держать ради этого два
+# агента незачем, тем более что оба бинарника лежат в одном образе.
+VPN_PROTO = (os.environ.get("VPN_PROTO", "awg") or "awg").strip().lower()
+IS_AWG = VPN_PROTO != "wg"
+# Имена утилит и качдиска подставляются отсюда, чтобы остальной код не
+# знал, в каком мы режиме.
+BIN = "awg" if IS_AWG else "wg"
+BIN_QUICK = "awg-quick" if IS_AWG else "wg-quick"
 
 # ── AmneziaWG ───────────────────────────────────────────────────────
 # Поколение протокола для НОВОЙ установки:

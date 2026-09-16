@@ -46,15 +46,15 @@ async def run(*args: str, stdin: Optional[str] = None, check: bool = True) -> st
 # ── Ключи ───────────────────────────────────────────────────────────
 
 async def genkey() -> str:
-    return (await run("awg", "genkey")).strip()
+    return (await run(config.BIN, "genkey")).strip()
 
 
 async def pubkey(private_key: str) -> str:
-    return (await run("awg", "pubkey", stdin=private_key + "\n")).strip()
+    return (await run(config.BIN, "pubkey", stdin=private_key + "\n")).strip()
 
 
 async def genpsk() -> str:
-    return (await run("awg", "genpsk")).strip()
+    return (await run(config.BIN, "genpsk")).strip()
 
 
 async def keypair() -> tuple[str, str]:
@@ -69,7 +69,7 @@ _dump_cache: dict[str, Any] = {"at": 0.0, "peers": {}}
 
 async def is_up() -> bool:
     try:
-        await run("awg", "show", config.WG_INTERFACE, "dump")
+        await run(config.BIN, "show", config.WG_INTERFACE, "dump")
         return True
     except AwgError:
         return False
@@ -103,7 +103,7 @@ async def peer_stats(force: bool = False) -> dict[str, dict[str, Any]]:
     if not force and now - float(_dump_cache["at"]) < config.STATS_TTL_SECONDS:
         return _dump_cache["peers"]  # type: ignore[return-value]
     try:
-        raw = await run("awg", "show", config.WG_INTERFACE, "dump")
+        raw = await run(config.BIN, "show", config.WG_INTERFACE, "dump")
         peers = _parse_dump(raw)
     except AwgError:
         # Интерфейс не поднят — это не ошибка запроса списка: клиенты в
@@ -124,12 +124,12 @@ async def sync() -> None:
     """Накатить текущий файл конфига на живой интерфейс."""
     if not await is_up():
         return
-    stripped = await run("awg-quick", "strip", config.CONF_PATH)
+    stripped = await run(config.BIN_QUICK, "strip", config.CONF_PATH)
     fd, path = tempfile.mkstemp(prefix="awgsync-", suffix=".conf")
     try:
         with os.fdopen(fd, "w") as fh:
             fh.write(stripped)
-        await run("awg", "syncconf", config.WG_INTERFACE, path)
+        await run(config.BIN, "syncconf", config.WG_INTERFACE, path)
     finally:
         os.unlink(path)
     drop_stats_cache()
@@ -138,12 +138,12 @@ async def sync() -> None:
 async def up() -> None:
     if await is_up():
         return
-    await run("awg-quick", "up", config.CONF_PATH)
+    await run(config.BIN_QUICK, "up", config.CONF_PATH)
     drop_stats_cache()
 
 
 async def down() -> None:
     if not await is_up():
         return
-    await run("awg-quick", "down", config.CONF_PATH, check=False)
+    await run(config.BIN_QUICK, "down", config.CONF_PATH, check=False)
     drop_stats_cache()

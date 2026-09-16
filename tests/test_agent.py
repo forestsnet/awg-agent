@@ -94,6 +94,17 @@ def main() -> None:
     check("клиент получает следующий свободный",
           render.next_address({"10.8.0.2", "10.8.0.3"}) == "10.8.0.4")
 
+    # 253 адреса в /24 — это потолок на агента. Чтобы не поднимать
+    # второго ради 300-го клиента, подсеть задаётся целиком.
+    from agent import config as cfg1
+    cfg1.WG_SUBNET = "10.8.0.0/16"
+    check("подсеть берётся из WG_SUBNET", str(render.subnet()) == "10.8.0.0/16")
+    check("в ней десятки тысяч адресов", render.subnet().num_addresses - 2 > 65000)
+    busy = {f"10.8.0.{i}" for i in range(2, 256)}
+    check("за границей /24 выдача продолжается",
+          render.next_address(busy).startswith("10.8.1."))
+    cfg1.WG_SUBNET = ""
+
     print(f"\n{B}4. Сессия{N}")
     secret = auth.new_secret()
     token = auth.issue(secret)

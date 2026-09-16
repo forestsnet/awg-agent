@@ -65,19 +65,25 @@ class Store:
 
     async def _init_server(self) -> None:
         private, public = await awg.keypair()
-        self.server = {
-            "private_key": private,
-            "public_key": public,
-            "params": proto.generate(
+        params = (
+            proto.generate(
                 config.AWG_PROTO,
                 random_trailers=config.AWG_RANDOM_TRAILERS,
                 disable_cookies=config.AWG_DISABLE_COOKIES,
-            ),
-            "i1": proto.signature_packet(),
+            )
+            if config.IS_AWG
+            else {"proto": 0}
+        )
+        self.server = {
+            "private_key": private,
+            "public_key": public,
+            "params": params,
+            "i1": proto.signature_packet() if config.IS_AWG else None,
             "created_at": _now(),
         }
         logger.info(
-            "сервер инициализирован, протокол %s", self.server["params"]["proto"]
+            "сервер инициализирован: %s, протокол %s",
+            config.VPN_PROTO, params.get("proto"),
         )
 
     async def _import_legacy(self) -> None:
@@ -192,7 +198,7 @@ class Store:
                 "preshared_key": await awg.genpsk(),
                 # Свой сигнатурный пакет каждому: одинаковый I1 у всех и
                 # есть та примета, по которой их вычисляют.
-                "i1": proto.signature_packet(),
+                "i1": proto.signature_packet() if config.IS_AWG else None,
                 "created_at": _now(),
                 "updated_at": _now(),
                 # Лимиты: 0 — без лимита, период сброса «none».

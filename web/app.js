@@ -197,13 +197,18 @@ function renderHealth(h) {
 
   // Поколение протокола — короткой пилюлей, подробности в подсказке.
   const badge = $('proto-badge');
-  const extras = [];
-  if (h.header_protection) extras.push('HeaderProtectionKey');
-  if (h.random_trailers) extras.push('RandomTrailers');
-  if (h.disable_cookies) extras.push('DisableCookies');
-  const gen = h.protocol === 3 ? (h.random_trailers || h.disable_cookies ? '3.1' : '3.0') : '2.0';
-  setText(badge, `AWG ${gen}`);
-  badge.title = extras.length ? extras.join(', ') : 'Jc, S1–S4, H1–H4, I1–I5';
+  if (h.vpn === 'wg') {
+    setText(badge, 'WireGuard');
+    badge.title = 'Обычный WireGuard, без обфускации';
+  } else {
+    const extras = [];
+    if (h.header_protection) extras.push('HeaderProtectionKey');
+    if (h.random_trailers) extras.push('RandomTrailers');
+    if (h.disable_cookies) extras.push('DisableCookies');
+    const gen = h.protocol === 3 ? (h.random_trailers || h.disable_cookies ? '3.1' : '3.0') : '2.0';
+    setText(badge, `AWG ${gen}`);
+    badge.title = extras.length ? extras.join(', ') : 'Jc, S1–S4, H1–H4, I1–I5';
+  }
 
   $('iface-state').classList.toggle('down', !h.up);
   setText($('iface-text'), h.up ? 'активен' : 'не запущен');
@@ -386,27 +391,53 @@ function renderQuota(row, c) {
 
 let limitsFor = null;
 
+// Единицу подбираем по величине, а число округляем: показывать
+// «9.313225746154785e-7 ГБ» вместо «безлимита» — это издевательство.
+function splitSize(bytes) {
+  const units = [[1099511627776, 'ТБ'], [1073741824, 'ГБ'], [1048576, 'МБ']];
+  for (const [step] of units) {
+    if (bytes >= step) return [String(Math.round((bytes / step) * 100) / 100), String(step)];
+  }
+  return ['', '1073741824'];
+}
+
+function syncUnlimited() {
+  const noLimit = $('limit-unlimited').checked;
+  $('limit-value').disabled = noLimit;
+  $('limit-unit').disabled = noLimit;
+  $('limit-period').disabled = noLimit;
+  const noRate = $('rate-unlimited').checked;
+  $('limit-rate').disabled = noRate;
+}
+$('limit-unlimited').addEventListener('change', syncUnlimited);
+$('rate-unlimited').addEventListener('change', syncUnlimited);
+
 function openLimits(client) {
   limitsFor = client.id;
   $('limits-title').textContent = `Лимит и срок — ${client.name}`;
 
-  // Показываем в той единице, в какой человек, скорее всего, и задавал.
-  const units = [1099511627776, 1073741824, 1048576];
-  const unit = units.find((u) => client.quotaBytes && client.quotaBytes % u === 0) || 1073741824;
-  $('limit-unit').value = String(unit);
-  $('limit-value').value = client.quotaBytes ? String(client.quotaBytes / unit) : '';
+  const [value, unit] = splitSize(client.quotaBytes || 0);
+  $('limit-unlimited').checked = !client.quotaBytes;
+  $('limit-value').value = value;
+  $('limit-unit').value = unit;
   $('limit-period').value = client.quotaPeriod || 'none';
+
+  $('rate-unlimited').checked = !client.rateBps;
   $('limit-rate').value = client.rateBps ? String(Math.round(client.rateBps / 1e6)) : '';
+
   $('limit-expires').value = client.expiresAt ? client.expiresAt.slice(0, 10) : '';
+  syncUnlimited();
   openModal('limits-modal');
-  setTimeout(() => $('limit-value').focus(), 40);
+  setTimeout(() => (client.quotaBytes ? $('limit-value') : $('limit-unlimited')).focus(), 40);
 }
 
 $('limits-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   if (!limitsFor) return;
   const value = parseFloat($('limit-value').value || '0');
-  const bytes = Math.max(0, Math.round((isNaN(value) ? 0 : value) * Number($('limit-unit').value)));
+  const bytes = $('limit-unlimited').checked
+    ? 0
+    : Math.max(0, Math.round((isNaN(value) ? 0 : value) * Number($('limit-unit').value)));
   const expires = $('limit-expires').value;
   try {
     await api(`/api/wireguard/client/${limitsFor}/quota`, {
@@ -421,12 +452,15 @@ $('limits-form').addEventListener('submit', async (e) => {
     });
     // Скорость в мегабитах: в битах её никто не набирает.
     const mbit = parseFloat($('limit-rate').value || '0');
+    const bps = $('rate-unlimited').checked
+      ? 0
+      : Math.max(0, Math.round((isNaN(mbit) ? 0 : mbit) * 1e6));
     await api(`/api/wireguard/client/${limitsFor}/rate`, {
       method: 'PUT',
-      body: JSON.stringify({ bps: Math.max(0, Math.round((isNaN(mbit) ? 0 : mbit) * 1e6)) }),
+      body: JSON.stringify({ bps }),
     });
     closeModal('limits-modal');
-    toast(bytes ? `Лимит ${fmtBytes(bytes)} ${PERIOD_LABEL[$('limit-period').value]}` : 'Лимит снят');
+    toast(bytes ? `Лимит ${fmtBytes(bytes)} ${PERIOD_LABEL[$('limit-period').value]}` : 'Без лимита');
     await refresh();
   } catch (err) { toast(err.message, 'err'); }
 });

@@ -361,6 +361,7 @@ async def health() -> dict[str, Any]:
     return {
         "ok": True,
         "agent": __version__,
+        "vpn": config.VPN_PROTO,
         "interface": config.WG_INTERFACE,
         "endpoint": f"{config.WG_HOST}:{config.WG_CONFIG_PORT}" if config.WG_HOST else None,
         "up": await awg.is_up(),

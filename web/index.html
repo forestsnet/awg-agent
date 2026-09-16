@@ -104,27 +104,31 @@
     <div class="modal-head"><b id="limits-title">Лимит и срок</b>
       <button type="button" class="icon" data-close><span data-icon="close" data-size="16"></span></button></div>
 
-    <label class="field">
-      Лимит трафика
+    <div class="field">
+      <div class="field-head">
+        <span>Лимит трафика</span>
+        <label class="switch"><input type="checkbox" id="limit-unlimited"><span>Безлимит</span></label>
+      </div>
       <div class="pair">
-        <input id="limit-value" type="number" min="0" step="0.1" placeholder="0">
+        <input id="limit-value" type="number" min="0" step="0.5" placeholder="0">
         <select id="limit-unit">
           <option value="1073741824">ГБ</option>
           <option value="1099511627776">ТБ</option>
           <option value="1048576">МБ</option>
         </select>
       </div>
-      <span class="hint">0 — без лимита</span>
-    </label>
+    </div>
 
-    <label class="field">
-      Скорость
+    <div class="field">
+      <div class="field-head">
+        <span>Скорость</span>
+        <label class="switch"><input type="checkbox" id="rate-unlimited"><span>Без ограничения</span></label>
+      </div>
       <div class="pair">
         <input id="limit-rate" type="number" min="0" step="1" placeholder="0">
         <span class="unit">Мбит/с</span>
       </div>
-      <span class="hint">0 — не ограничивать</span>
-    </label>
+    </div>
 
     <label class="field">
       Сбрасывать
