@@ -1,0 +1,25 @@
+services:
+  awg:
+    image: ghcr.io/forestsnet/awg-agent:latest
+    container_name: awg-agent
+    restart: unless-stopped
+    environment:
+      # Хэш пароля: htpasswd -nbB admin 'пароль' | cut -d: -f2
+      # В compose доллары экранируются удвоением, иначе интерполяция
+      # съест куски хэша и не подойдёт ни один пароль.
+      PASSWORD_HASH: "$$2y$$05$$замените"
+      WG_HOST: "1.2.3.4"
+      WG_PORT: "51820"
+      PORT: "51821"
+      AWG_PROTO: "3"
+    volumes:
+      - ./data:/etc/amnezia/amneziawg
+    ports:
+      - "51820:51820/udp"
+      - "51821:51821/tcp"
+    cap_add: [NET_ADMIN, SYS_MODULE, NET_RAW]
+    sysctls:
+      net.ipv4.conf.all.src_valid_mark: "1"
+      net.ipv4.ip_forward: "1"
+    devices:
+      - /dev/net/tun:/dev/net/tun

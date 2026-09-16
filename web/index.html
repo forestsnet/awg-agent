@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>AmneziaWG — forestsnet agent</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🛡️</text></svg>">
+</head>
+<body>
+<div id="login" class="screen">
+  <form id="login-form" class="card login">
+    <h1>AmneziaWG</h1>
+    <p class="muted">Панель управления сервером</p>
+    <input id="password" type="password" placeholder="Пароль" autocomplete="current-password" required>
+    <button type="submit">Войти</button>
+    <div id="login-error" class="error"></div>
+  </form>
+</div>
+
+<div id="app" class="screen hidden">
+  <header>
+    <div class="brand">
+      <span class="dot" id="iface-dot"></span>
+      <b>AmneziaWG</b>
+      <span class="muted" id="server-info">—</span>
+    </div>
+    <div class="actions">
+      <input id="search" type="search" placeholder="Поиск" autocomplete="off">
+      <button id="add-btn" class="primary">Добавить</button>
+      <button id="logout-btn" class="ghost">Выйти</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="empty" class="empty hidden">Клиентов пока нет</div>
+    <table id="table">
+      <thead>
+        <tr>
+          <th>Имя</th><th>Адрес</th><th>Хендшейк</th><th class="num">↓</th><th class="num">↑</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </main>
+</div>
+
+<div id="qr-modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head"><b id="qr-name"></b><button class="ghost" data-close>✕</button></div>
+    <div id="qr-body" class="qr"></div>
+    <a id="qr-download" class="primary button" download>Скачать .conf</a>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
