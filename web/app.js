@@ -30,6 +30,7 @@ const ICONS = {
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9"/>',
   gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
+  archive: '<rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>',
   chart: '<path d="M3 3v16a2 2 0 0 0 2 2h16"/><rect x="7" y="13" width="3" height="5" rx="1"/><rect x="12" y="9" width="3" height="9" rx="1"/><rect x="17" y="5" width="3" height="13" rx="1"/>',
 };
 
@@ -188,6 +189,17 @@ document.addEventListener('visibilitychange', () => {
 
 /* ── Отрисовка ──────────────────────────────────────────────────── */
 
+function applyBrand(vpn) {
+  // Один агент работает и как AmneziaWG, и как обычный WireGuard.
+  // Название сервера обязано совпадать с тем, что он на самом деле
+  // поднял: «AmneziaWG» над WireGuard-сервером — это не мелочь, а
+  // повод потом полчаса искать несуществующую обфускацию.
+  const name = vpn === 'wg' ? 'WireGuard' : 'AmneziaWG';
+  document.title = name;
+  setText($('login-brand'), name);
+  setText($('brand-title'), name);
+}
+
 function renderHealth(h) {
   // В подзаголовке — то, что спрашивают чаще всего: куда подключаться.
   // Раньше здесь висел список включённых параметров обфускации: читать
@@ -197,10 +209,12 @@ function renderHealth(h) {
 
   // Поколение протокола — короткой пилюлей, подробности в подсказке.
   const badge = $('proto-badge');
+  applyBrand(h.vpn);
   if (h.vpn === 'wg') {
-    setText(badge, 'WireGuard');
-    badge.title = 'Обычный WireGuard, без обфускации';
+    // Название уже сказало «WireGuard» — второй раз не повторяем.
+    badge.classList.add('hidden');
   } else {
+    badge.classList.remove('hidden');
     const extras = [];
     if (h.header_protection) extras.push('HeaderProtectionKey');
     if (h.random_trailers) extras.push('RandomTrailers');
@@ -408,9 +422,27 @@ function syncUnlimited() {
   $('limit-period').disabled = noLimit;
   const noRate = $('rate-unlimited').checked;
   $('limit-rate').disabled = noRate;
+  $('limit-expires').disabled = $('expires-never').checked;
 }
 $('limit-unlimited').addEventListener('change', syncUnlimited);
 $('rate-unlimited').addEventListener('change', syncUnlimited);
+// Копия скачивается обычной загрузкой: сессия уедет кукой, а браузер
+// положит архив туда же, куда кладёт всё остальное. Внутри приватные
+// ключи — поэтому и кнопка, а не автоматическая рассылка куда-нибудь.
+$('backup-btn').addEventListener('click', () => {
+  window.location.href = '/api/backup/archive';
+  toast('Собираем копию');
+});
+
+$('expires-never').addEventListener('change', () => {
+  // Сняли «бессрочно» — подставляем сегодняшний день, чтобы человеку
+  // было от чего отталкиваться: пустое поле даты браузеры и так рисуют
+  // сегодняшним числом, и понять, задан срок или нет, по нему нельзя.
+  if (!$('expires-never').checked && !$('limit-expires').value) {
+    $('limit-expires').value = new Date().toISOString().slice(0, 10);
+  }
+  syncUnlimited();
+});
 
 function openLimits(client) {
   limitsFor = client.id;
@@ -425,6 +457,7 @@ function openLimits(client) {
   $('rate-unlimited').checked = !client.rateBps;
   $('limit-rate').value = client.rateBps ? String(Math.round(client.rateBps / 1e6)) : '';
 
+  $('expires-never').checked = !client.expiresAt;
   $('limit-expires').value = client.expiresAt ? client.expiresAt.slice(0, 10) : '';
   syncUnlimited();
   openModal('limits-modal');
@@ -438,7 +471,7 @@ $('limits-form').addEventListener('submit', async (e) => {
   const bytes = $('limit-unlimited').checked
     ? 0
     : Math.max(0, Math.round((isNaN(value) ? 0 : value) * Number($('limit-unit').value)));
-  const expires = $('limit-expires').value;
+  const expires = $('expires-never').checked ? '' : $('limit-expires').value;
   try {
     await api(`/api/wireguard/client/${limitsFor}/quota`, {
       method: 'PUT',
@@ -664,6 +697,12 @@ async function openQr(client) {
 paintIcons();
 paintThemeButton();
 (async () => {
+  // Здоровье отдаётся без пароля: имя протокола нужно и на экране
+  // входа, до того как пустили внутрь.
+  fetch('/api/health')
+    .then((r) => r.json())
+    .then((h) => applyBrand(h.vpn))
+    .catch(() => {});
   try {
     const s = await fetch('/api/session').then((r) => r.json());
     s.authenticated ? showApp() : showLogin();

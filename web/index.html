@@ -24,7 +24,7 @@
 <div id="login" class="screen center hidden">
   <form id="login-form" class="login">
     <div class="mark" data-icon="shield" data-size="26"></div>
-    <h1>AmneziaWG</h1>
+    <h1 id="login-brand">AmneziaWG</h1>
     <p class="muted">Управление сервером</p>
     <input id="password" type="password" placeholder="Пароль" autocomplete="current-password" required>
     <button type="submit" class="primary">Войти</button>
@@ -37,7 +37,7 @@
     <div class="brand">
       <div class="mark" data-icon="shield" data-size="20"></div>
       <div class="who">
-        <div class="title">AmneziaWG</div>
+        <div class="title" id="brand-title">AmneziaWG</div>
         <div class="sub muted" id="server-info">—</div>
       </div>
       <span class="badge-proto" id="proto-badge" title="">AWG</span>
@@ -49,6 +49,7 @@
         <input id="search" type="search" placeholder="Имя или адрес" autocomplete="off">
       </label>
       <button id="add-btn" class="primary"><span data-icon="plus" data-size="18"></span>Добавить</button>
+      <button id="backup-btn" class="icon" title="Скачать резервную копию (ключи сервера и клиентов)"><span data-icon="archive" data-size="18"></span></button>
       <button id="theme-btn" class="icon" title="Тема"></button>
       <button id="logout-btn" class="icon" title="Выйти"><span data-icon="logout" data-size="18"></span></button>
     </div>
@@ -141,11 +142,13 @@
       </select>
     </label>
 
-    <label class="field">
-      Работает до
+    <div class="field">
+      <div class="field-head">
+        <span>Работает до</span>
+        <label class="switch"><input type="checkbox" id="expires-never"><span>Бессрочно</span></label>
+      </div>
       <input id="limit-expires" type="date">
-      <span class="hint">Пусто — бессрочно</span>
-    </label>
+    </div>
 
     <div class="modal-foot">
       <button type="button" class="secondary" id="limit-reset">Обнулить счётчик</button>

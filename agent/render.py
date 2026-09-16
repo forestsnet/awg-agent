@@ -4,7 +4,7 @@ from __future__ import annotations
 import ipaddress
 from typing import Any
 
-from . import config, proto
+from . import config, net, proto
 
 
 def subnet() -> ipaddress.IPv4Network:
@@ -57,10 +57,10 @@ def server_conf(server: dict[str, Any], clients: list[dict[str, Any]]) -> str:
         if server.get("i1"):
             lines.append(f"I1 = {server['i1']}")
 
-    net = f"{subnet().network_address}/{subnet().prefixlen}"
+    cidr = f"{subnet().network_address}/{subnet().prefixlen}"
     lines += [
-        "PostUp = " + _nat_rules(net, add=True),
-        "PostDown = " + _nat_rules(net, add=False),
+        "PostUp = " + _nat_rules(cidr, add=True),
+        "PostDown = " + _nat_rules(cidr, add=False),
     ]
 
     for client in clients:
@@ -78,13 +78,26 @@ def server_conf(server: dict[str, Any], clients: list[dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _nat_rules(net: str, *, add: bool) -> str:
-    """NAT и форвардинг. Правила снимаются теми же ключами, что ставятся."""
+def _nat_rules(cidr: str, *, add: bool) -> str:
+    """NAT и форвардинг. Правила снимаются теми же ключами, что ставятся.
+
+    Интерфейс спрашиваем у системы, а не берём из окружения напрямую:
+    установщик видит имя хоста, а правило работает внутри контейнера
+    (см. net.egress_device).
+    """
     flag_nat = "-A" if add else "-D"
-    dev = config.WG_DEVICE
+    dev = net.egress_device()
     iface = config.WG_INTERFACE
     return "; ".join([
-        f"iptables -t nat {flag_nat} POSTROUTING -s {net} -o {dev} -j MASQUERADE",
+        f"iptables -t nat {flag_nat} POSTROUTING -s {cidr} -o {dev} -j MASQUERADE",
+        # Подрезаем MSS под реальный MTU туннеля. Без этого клиент со
+        # слишком большим MTU (например, выданный до того, как мы стали
+        # его проставлять) отправляет пакеты, которые не пролезают, и
+        # получает соединение без трафика.
+        f"iptables -t mangle {flag_nat} FORWARD -o {iface} -p tcp "
+        f"--tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu",
+        f"iptables -t mangle {flag_nat} FORWARD -i {iface} -p tcp "
+        f"--tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu",
         f"iptables {flag_nat} INPUT -p udp -m udp --dport {config.WG_PORT} -j ACCEPT",
         f"iptables {flag_nat} FORWARD -i {iface} -j ACCEPT",
         f"iptables {flag_nat} FORWARD -o {iface} -j ACCEPT",

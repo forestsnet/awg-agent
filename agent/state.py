@@ -61,7 +61,13 @@ class Store:
             await self._import_legacy()
         if not self.server:
             await self._init_server()
-            await self.persist()
+        # Конфиг интерфейса пересобираем на каждом старте. Он собран из
+        # состояния и окружения, а они между запусками меняются: агент
+        # переехал в новый контейнер — сменился интерфейс для NAT,
+        # обновился образ — поменялись правила. PostUp отрабатывает
+        # ровно один раз, при подъёме интерфейса, и если на диске лежит
+        # конфиг позапрошлой версии, чинить его потом уже некому.
+        await self.persist()
 
     async def _init_server(self) -> None:
         private, public = await awg.keypair()
@@ -167,6 +173,72 @@ class Store:
             await shaper.apply(self.clients)
         except Exception:  # noqa: BLE001
             logger.exception("шейпер не применился")
+
+    # ── Резервная копия ─────────────────────────────────────────────
+
+    def export_state(self) -> dict[str, Any]:
+        """Всё, чего нет больше нигде: ключи сервера и клиентов.
+
+        Конфиги и правила из этого собираются заново, а вот приватные
+        ключи существуют ровно в одном экземпляре — на этой машине. Если
+        VPS умер, без копии клиентам придётся раздавать новые конфиги.
+
+        Секрет сессий намеренно не отдаём: он к восстановлению отношения
+        не имеет, а лишний секрет в архиве — лишний секрет в архиве.
+        """
+        server = {k: v for k, v in self.server.items() if k != "session_secret"}
+        return {
+            "version": 1,
+            "vpn": config.VPN_PROTO,
+            "interface": config.WG_INTERFACE,
+            "subnet": str(render.subnet()),
+            "created_at": _now(),
+            "server": server,
+            "clients": self.clients,
+        }
+
+    async def import_state(self, data: dict[str, Any]) -> int:
+        """Заменить состояние присланным. Возвращает число клиентов.
+
+        Проверяем совместимость до того, как что-то трогать: копия от
+        AmneziaWG на обычном WireGuard даст конфиг с параметрами, на
+        которых wg-quick падает, а копия из другой подсети — адреса, до
+        которых с этого интерфейса не достучаться. Обе поломки чинятся
+        только руками по SSH, ради чего всё и затевалось.
+        """
+        if not isinstance(data, dict):
+            raise ValueError("Не похоже на резервную копию")
+        server = data.get("server")
+        clients = data.get("clients")
+        if not isinstance(server, dict) or not server.get("private_key"):
+            raise ValueError("В копии нет ключа сервера")
+        if not isinstance(clients, list):
+            raise ValueError("В копии нет списка клиентов")
+        vpn = str(data.get("vpn") or config.VPN_PROTO)
+        if vpn != config.VPN_PROTO:
+            raise ValueError(
+                f"Копия снята с {vpn}, а здесь {config.VPN_PROTO} — "
+                "поднимите агент в том же режиме"
+            )
+        subnet = str(data.get("subnet") or "")
+        current = str(render.subnet())
+        if subnet and subnet != current:
+            raise ValueError(
+                f"Копия из подсети {subnet}, а здесь {current} — "
+                "задайте WG_SUBNET и перезапустите агент"
+            )
+
+        async with self._lock:
+            # Свой секрет сессий оставляем: иначе восстановление выкинет
+            # из панели того, кто его и запустил.
+            secret = self.server.get("session_secret")
+            self.server = dict(server)
+            if secret:
+                self.server["session_secret"] = secret
+            self.clients = [dict(c) for c in clients]
+            await self.apply()
+        logger.info("состояние восстановлено из копии: клиентов %d", len(self.clients))
+        return len(self.clients)
 
     # ── Клиенты ─────────────────────────────────────────────────────
 

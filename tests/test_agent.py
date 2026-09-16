@@ -89,6 +89,42 @@ def main() -> None:
     check("правила NAT снимаются теми же ключами",
           srv.count("-A POSTROUTING") == 1 and srv.count("-D POSTROUTING") == 1)
 
+    # У AmneziaWG 3.x накладные расходы больше классических 60 байт:
+    # на MTU 1380 крупные пакеты пропадают целиком, а соединение при
+    # этом выглядит живым — хендшейк проходит, ACK'и ходят.
+    check("MTU проставлен и серверу, и клиенту",
+          "MTU = 1280" in srv and "MTU = 1280" in cli)
+    check("MSS подрезается под туннель", "--clamp-mss-to-pmtu" in srv)
+
+    # Установщик крутится на хосте и видит хостовый ens3, а MASQUERADE
+    # работает внутри контейнера. Правило с чужим -o не совпадает ни с
+    # одним пакетом и не ошибается: хендшейк проходит, трафика нет.
+    from agent import config as cfg0, net as netmod
+
+    route = os.path.join(tempfile.mkdtemp(), "route")
+    with open(route, "w", encoding="utf-8") as fh:
+        fh.write("Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n")
+        fh.write("wg0\t0000080A\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n")
+        fh.write("eth0\t00000000\t010012AC\t0003\t0\t0\t0\t00000000\t0\t0\t0\n")
+    check("маршрут по умолчанию берётся из /proc, а не из окружения",
+          netmod.default_route_device(route) == "eth0")
+    check("маршрут в туннель за маршрут по умолчанию не считаем",
+          netmod.default_route_device(route) != "wg0")
+
+    was_device, was_present = cfg0.WG_DEVICE, netmod._present
+    netmod.reset_cache()
+    cfg0.WG_DEVICE = "ens3"
+    netmod._present = lambda name: name == "eth0"
+    check("хостовый интерфейс, которого тут нет, не берём",
+          netmod.egress_device() == "eth0")
+    netmod.reset_cache()
+    cfg0.WG_DEVICE = "eth1"
+    netmod._present = lambda name: name in ("eth0", "eth1")
+    check("явно заданный интерфейс уважаем, если он на месте",
+          netmod.egress_device() == "eth1")
+    netmod._present, cfg0.WG_DEVICE = was_present, was_device
+    netmod.reset_cache()
+
     print(f"\n{B}3. Адреса{N}")
     check("сервер занимает первый адрес", render.server_address() == "10.8.0.1")
     check("клиент получает следующий свободный",
@@ -157,6 +193,43 @@ def main() -> None:
         check("конфиг сервера записан", os.path.exists(os.path.join(tmp, "wg0.conf")))
         check("клиент ищется и по имени, и по id",
               store.find("старый") is store.find("id-1") is not None)
+
+        # ── Резервная копия ────────────────────────────────────────
+        # Приватные ключи есть только на этой машине: умер VPS — и без
+        # копии клиентам раздавать новые конфиги.
+        st.shaper.apply = lambda clients: asyncio.sleep(0)
+        store.server["session_secret"] = "секрет-сессий"
+        dump = store.export_state()
+        check("в копии ключ сервера", dump["server"].get("private_key"))
+        check("и клиенты с ключами",
+              len(dump["clients"]) == 1 and dump["clients"][0].get("private_key"))
+        check("секрет сессий в копию не попадает",
+              "session_secret" not in dump["server"])
+
+        foreign = json.loads(json.dumps(dump))
+        foreign["vpn"] = "wg" if dump["vpn"] == "awg" else "awg"
+        try:
+            asyncio.run(store.import_state(foreign))
+            check("копию от чужого протокола не принимаем", False)
+        except ValueError as exc:
+            check("копию от чужого протокола не принимаем", "режиме" in str(exc))
+
+        other_net = json.loads(json.dumps(dump))
+        other_net["subnet"] = "10.77.0.0/16"
+        try:
+            asyncio.run(store.import_state(other_net))
+            check("копию из чужой подсети тоже", False)
+        except ValueError as exc:
+            check("копию из чужой подсети тоже", "WG_SUBNET" in str(exc))
+
+        restored = json.loads(json.dumps(dump))
+        restored["clients"].append({**dump["clients"][0], "id": "id-2",
+                                    "name": "второй", "address": "10.8.0.8"})
+        count = asyncio.run(store.import_state(restored))
+        check("восстановление ставит клиентов из копии",
+              count == 2 and len(store.clients) == 2)
+        check("свой секрет сессий остаётся на месте",
+              store.server.get("session_secret") == "секрет-сессий")
 
     print(f"\n{B}6. Лимиты и сроки{N}")
     from datetime import datetime as _dt, timedelta as _td

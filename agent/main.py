@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, auth, awg, config, quota, render
+from . import __version__, auth, awg, config, net, quota, render
 from .state import store
 
 logging.basicConfig(
@@ -83,7 +83,14 @@ async def _startup() -> None:
     if config.WG_AUTO_UP:
         try:
             await awg.up()
-            logger.info("интерфейс %s поднят", config.WG_INTERFACE)
+            # Имя интерфейса в логе не для красоты: NAT на чужом
+            # интерфейсе — единственная поломка, которая выглядит как
+            # успешное подключение без трафика.
+            logger.info(
+                "интерфейс %s поднят, NAT через %s",
+                config.WG_INTERFACE,
+                net.egress_device(),
+            )
         except awg.AwgError as exc:
             # Не падаем: API должен отвечать даже когда интерфейс не
             # встал — иначе про причину узнать неоткуда.
@@ -360,6 +367,57 @@ async def client_qr(key: str) -> Response:
         buf, kind="svg", scale=5, border=2, dark="#0f172a", light="#ffffff"
     )
     return Response(buf.getvalue(), media_type="image/svg+xml")
+
+
+# ── Резервная копия ─────────────────────────────────────────────────
+#
+# Ключи сервера и клиентов есть только на этой машине. Ходить за ними по
+# SSH, чтобы забрать clients.json, — ровно то, чего не хочется делать
+# руками на каждом из десятка серверов, поэтому копия снимается ручкой.
+
+
+@app.get("/api/backup", dependencies=[Depends(_authed)])
+async def backup_export() -> dict[str, Any]:
+    """Состояние целиком — его забирает бот в общий бэкап."""
+    return store.export_state()
+
+
+@app.get("/api/backup/archive", dependencies=[Depends(_authed)])
+async def backup_archive() -> Response:
+    """То же, но zip'ом — чтобы скачать кнопкой из панели."""
+    import io
+    import json as _json
+    import zipfile
+
+    data = store.export_state()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("state.json", _json.dumps(data, ensure_ascii=False, indent=2))
+        zf.writestr(
+            "README.txt",
+            "Резервная копия агента forestsnet.\n\n"
+            f"Режим: {data['vpn']}, подсеть: {data['subnet']}.\n"
+            "Внутри приватные ключи сервера и клиентов — храните как пароли.\n\n"
+            "Восстановление: POST state.json на /api/backup/restore того же\n"
+            "агента (режим и подсеть должны совпадать), либо из админки бота.\n",
+        )
+    stamp = (data.get("created_at") or "").replace(":", "-")[:19]
+    name = f"{config.VPN_PROTO}-backup-{stamp or 'now'}.zip"
+    return Response(
+        buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
+@app.post("/api/backup/restore", dependencies=[Depends(_authed)])
+async def backup_restore(payload: dict[str, Any]) -> dict[str, Any]:
+    """Поднять состояние из копии. Всё, что было на агенте, заменяется."""
+    try:
+        restored = await store.import_state(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"success": True, "clients": restored}
 
 
 # ── Служебное ───────────────────────────────────────────────────────
