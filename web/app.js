@@ -30,6 +30,7 @@ const ICONS = {
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9"/>',
   gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
+  chart: '<path d="M3 3v16a2 2 0 0 0 2 2h16"/><rect x="7" y="13" width="3" height="5" rx="1"/><rect x="12" y="9" width="3" height="9" rx="1"/><rect x="17" y="5" width="3" height="13" rx="1"/>',
 };
 
 const icon = (name, size = 18) =>
@@ -257,6 +258,7 @@ function rowTemplate(id) {
     <div class="row-actions">
       <button class="icon" data-act="qr" title="QR и конфиг">${icon('qr', 17)}</button>
       <button class="icon" data-act="limits" title="Лимит и срок">${icon('gauge', 17)}</button>
+      <button class="icon" data-act="usage" title="Расход по дням">${icon('chart', 17)}</button>
       <button class="icon" data-act="toggle">${icon('power', 17)}</button>
       <button class="icon warn" data-act="del" title="Удалить">${icon('trash', 17)}</button>
     </div>`;
@@ -293,7 +295,10 @@ function render() {
 
     const nameEl = row.querySelector('.name');
     if (!nameEl.querySelector('input')) setText(nameEl, c.name);
-    setText(row.querySelector('.meta'), c.address + (c.endpoint ? ` · ${c.endpoint}` : ''));
+    const meta = [c.address];
+    if (c.rateBps) meta.push(fmtRate(c.rateBps));
+    if (c.endpoint) meta.push(c.endpoint);
+    setText(row.querySelector('.meta'), meta.join(' · '));
     row.querySelector('.pill').classList.toggle('live', isLive(c.latestHandshakeAt));
     setText(row.querySelector('.ago'), fmtAgo(c.latestHandshakeAt));
     setText(row.querySelector('.rx'), fmtBytes(c.transferRx));
@@ -391,6 +396,7 @@ function openLimits(client) {
   $('limit-unit').value = String(unit);
   $('limit-value').value = client.quotaBytes ? String(client.quotaBytes / unit) : '';
   $('limit-period').value = client.quotaPeriod || 'none';
+  $('limit-rate').value = client.rateBps ? String(Math.round(client.rateBps / 1e6)) : '';
   $('limit-expires').value = client.expiresAt ? client.expiresAt.slice(0, 10) : '';
   openModal('limits-modal');
   setTimeout(() => $('limit-value').focus(), 40);
@@ -413,6 +419,12 @@ $('limits-form').addEventListener('submit', async (e) => {
       // «работает до 31-го» значит, что 31-е ещё рабочее.
       body: JSON.stringify({ at: expires ? `${expires}T23:59:59` : null }),
     });
+    // Скорость в мегабитах: в битах её никто не набирает.
+    const mbit = parseFloat($('limit-rate').value || '0');
+    await api(`/api/wireguard/client/${limitsFor}/rate`, {
+      method: 'PUT',
+      body: JSON.stringify({ bps: Math.max(0, Math.round((isNaN(mbit) ? 0 : mbit) * 1e6)) }),
+    });
     closeModal('limits-modal');
     toast(bytes ? `Лимит ${fmtBytes(bytes)} ${PERIOD_LABEL[$('limit-period').value]}` : 'Лимит снят');
     await refresh();
@@ -428,6 +440,58 @@ $('limit-reset').addEventListener('click', async () => {
     await refresh();
   } catch (err) { toast(err.message, 'err'); }
 });
+
+const fmtRate = (bps) => (bps >= 1e9
+  ? `${(bps / 1e9).toFixed(bps % 1e9 ? 1 : 0)} Гбит/с`
+  : `${Math.round(bps / 1e6)} Мбит/с`);
+
+/* ── Расход по дням ─────────────────────────────────────────────── */
+
+async function openUsage(client) {
+  $('usage-title').textContent = `Расход — ${client.name}`;
+  $('usage-chart').innerHTML = '<span class="muted">…</span>';
+  openModal('usage-modal');
+  const data = await api(`/api/wireguard/client/${client.id}/usage?days=30`);
+  drawUsage(data);
+}
+
+function drawUsage(data) {
+  const days = data.days || [];
+  const rx = days.reduce((a, d) => a + d.rx, 0);
+  const tx = days.reduce((a, d) => a + d.tx, 0);
+  setText($('usage-rx'), fmtBytes(rx));
+  setText($('usage-tx'), fmtBytes(tx));
+  setText($('usage-total'), `всего за всё время ${fmtBytes(data.total || 0)}`);
+
+  const W = 600, H = 150, pad = 18;
+  const peak = Math.max(1, ...days.map((d) => d.rx + d.tx));
+  const step = (W - pad) / Math.max(1, days.length);
+  const barW = Math.max(3, step * 0.62);
+
+  // Рисуем SVG руками: библиотека графиков ради тридцати столбиков —
+  // это лишние сто килобайт на сервер клиента.
+  const bars = days.map((d, i) => {
+    const x = pad + i * step;
+    const hRx = ((d.rx / peak) * (H - 24)) || 0;
+    const hTx = ((d.tx / peak) * (H - 24)) || 0;
+    const title = `${d.date.slice(8)}.${d.date.slice(5, 7)} — принято ${fmtBytes(d.rx)}, отдано ${fmtBytes(d.tx)}`;
+    return `<g><title>${title}</title>`
+      + `<rect class="bar-tx" x="${x}" y="${H - hTx}" width="${barW}" height="${hTx}" rx="2"/>`
+      + `<rect class="bar-rx" x="${x}" y="${H - hTx - hRx}" width="${barW}" height="${hRx}" rx="2"/>`
+      + `</g>`;
+  }).join('');
+
+  const labels = days.map((d, i) => (i % 5 === 0
+    ? `<text class="lbl" x="${pad + i * step}" y="${H + 14}">${d.date.slice(8)}.${d.date.slice(5, 7)}</text>`
+    : '')).join('');
+
+  $('usage-chart').innerHTML =
+    `<svg viewBox="0 -10 ${W + pad} ${H + 30}" preserveAspectRatio="none">
+       <line class="grid" x1="0" y1="${H}" x2="${W + pad}" y2="${H}"/>
+       <text class="lbl" x="0" y="8">${fmtBytes(peak)}</text>
+       ${bars}${labels}
+     </svg>`;
+}
 
 /* ── Действия ───────────────────────────────────────────────────── */
 
@@ -487,6 +551,7 @@ $('rows').addEventListener('click', async (e) => {
   try {
     if (el.dataset.act === 'qr') return openQr(client);
     if (el.dataset.act === 'limits') return openLimits(client);
+    if (el.dataset.act === 'usage') return openUsage(client);
     if (el.dataset.act === 'rename') return startRename(el, client);
     if (el.dataset.act === 'toggle') {
       await api(`/api/wireguard/client/${id}/${client.enabled ? 'disable' : 'enable'}`,

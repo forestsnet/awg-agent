@@ -19,13 +19,26 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-from . import awg, config, proto, quota, render
+from . import awg, config, proto, quota, render, shaper
 
 logger = logging.getLogger("state")
 
 
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+
+
+def _prune_history(client: dict[str, Any]) -> None:
+    """Держим историю в пределах HISTORY_DAYS, считая по датам.
+
+    Не по количеству записей: дни простоя в историю не попадают, и по
+    счёту записей «последние 90» могли бы растянуться на годы.
+    """
+    history = client.get("history") or {}
+    if len(history) <= config.HISTORY_DAYS:
+        return
+    for date in sorted(history)[: len(history) - config.HISTORY_DAYS]:
+        history.pop(date, None)
 
 
 class Store:
@@ -105,7 +118,10 @@ class Store:
                 "traffic_total": 0,
                 "expires_at": None,
                 "disabled_reason": None,
-                "last_seen_total": 0,
+                "rate_bps": 0,
+                "history": {},
+                "last_seen_rx": 0,
+                "last_seen_tx": 0,
             })
         logger.info(
             "импорт из amnezia-wg-easy: перенесено клиентов %d", len(self.clients)
@@ -139,6 +155,12 @@ class Store:
         """Записать состояние и накатить его на живой интерфейс."""
         await self.persist()
         await awg.sync()
+        # Шейпер перестраиваем после синка: правила вешаются на адреса
+        # клиентов, а их состав только что мог измениться.
+        try:
+            await shaper.apply(self.clients)
+        except Exception:  # noqa: BLE001
+            logger.exception("шейпер не применился")
 
     # ── Клиенты ─────────────────────────────────────────────────────
 
@@ -181,8 +203,13 @@ class Store:
                 "traffic_total": 0,
                 "expires_at": None,
                 "disabled_reason": None,
-                # Последний сырой счётчик пира: по нему считаем прирост.
-                "last_seen_total": 0,
+                # 0 — скорость не ограничена.
+                "rate_bps": 0,
+                # Расход по дням: {"2026-09-16": {"rx": …, "tx": …}}.
+                "history": {},
+                # Последние сырые счётчики пира: по ним считаем прирост.
+                "last_seen_rx": 0,
+                "last_seen_tx": 0,
             }
             self.clients.append(client)
             await self.apply()
@@ -216,7 +243,8 @@ class Store:
                     client["expires_at"] = None
             if not enabled:
                 # Счётчики пира уезжают вместе с ним из интерфейса.
-                client["last_seen_total"] = 0
+                client["last_seen_rx"] = 0
+                client["last_seen_tx"] = 0
             client["updated_at"] = _now()
             await self.apply()
             return True
@@ -243,6 +271,16 @@ class Store:
             if not client.get("enabled", True) and client.get("disabled_reason") == quota.QUOTA:
                 client["enabled"] = True
                 client["disabled_reason"] = None
+            client["updated_at"] = _now()
+            await self.apply()
+            return True
+
+    async def set_rate(self, key: str, rate_bps: int) -> bool:
+        async with self._lock:
+            client = self.find(key)
+            if not client:
+                return False
+            client["rate_bps"] = max(0, int(rate_bps))
             client["updated_at"] = _now()
             await self.apply()
             return True
@@ -276,15 +314,26 @@ class Store:
         changed_membership = False
 
         async with self._lock:
+            today = now.strftime("%Y-%m-%d")
             for client in self.clients:
                 live = stats.get(client.get("public_key")) or {}
                 if live:
-                    current = int(live.get("transfer_rx", 0)) + int(live.get("transfer_tx", 0))
-                    grew = quota.delta(int(client.get("last_seen_total") or 0), current)
+                    rx = int(live.get("transfer_rx", 0))
+                    tx = int(live.get("transfer_tx", 0))
+                    d_rx = quota.delta(int(client.get("last_seen_rx") or 0), rx)
+                    d_tx = quota.delta(int(client.get("last_seen_tx") or 0), tx)
+                    grew = d_rx + d_tx
                     if grew:
                         client["quota_used"] = int(client.get("quota_used") or 0) + grew
                         client["traffic_total"] = int(client.get("traffic_total") or 0) + grew
-                    client["last_seen_total"] = current
+                        day = client.setdefault("history", {}).setdefault(
+                            today, {"rx": 0, "tx": 0}
+                        )
+                        day["rx"] += d_rx
+                        day["tx"] += d_tx
+                        _prune_history(client)
+                    client["last_seen_rx"] = rx
+                    client["last_seen_tx"] = tx
 
                 was_enabled = client.get("enabled", True)
                 events = quota.apply(client, now)
@@ -294,7 +343,8 @@ class Store:
                 if client.get("enabled", True) != was_enabled:
                     changed_membership = True
                     if not client.get("enabled", True):
-                        client["last_seen_total"] = 0
+                        client["last_seen_rx"] = 0
+                        client["last_seen_tx"] = 0
 
             if changed_membership:
                 await self.apply()

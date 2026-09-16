@@ -59,6 +59,11 @@ class ExpiresIn(BaseModel):
     at: Optional[str] = None
 
 
+class RateIn(BaseModel):
+    # Бит в секунду. 0 — скорость не ограничивать.
+    bps: int = Field(default=0, ge=0)
+
+
 class NameIn(BaseModel):
     name: str = Field(default="", max_length=120)
 
@@ -168,6 +173,7 @@ def _out(client: dict[str, Any], stats: dict[str, Any]) -> dict[str, Any]:
         "trafficTotal": int(client.get("traffic_total") or 0),
         "expiresAt": client.get("expires_at"),
         "disabledReason": client.get("disabled_reason"),
+        "rateBps": int(client.get("rate_bps") or 0),
     }
 
 
@@ -259,6 +265,62 @@ async def client_expires(key: str, payload: ExpiresIn) -> dict[str, Any]:
     return {"success": True}
 
 
+@app.put("/api/wireguard/client/{key}/rate", dependencies=[Depends(_authed)])
+async def client_rate(key: str, payload: RateIn) -> dict[str, Any]:
+    if not await store.set_rate(key, payload.bps):
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    logger.info("скорость для %s: %s бит/с", key, payload.bps or "без ограничения")
+    return {"success": True}
+
+
+@app.get("/api/wireguard/client/{key}/usage", dependencies=[Depends(_authed)])
+async def client_usage(key: str, days: int = 30) -> dict[str, Any]:
+    client = store.find(key)
+    if not client:
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    return {
+        "days": _usage_series(client.get("history") or {}, days),
+        "total": int(client.get("traffic_total") or 0),
+    }
+
+
+@app.get("/api/usage", dependencies=[Depends(_authed)])
+async def server_usage(days: int = 30) -> dict[str, Any]:
+    """Расход по всему серверу — сумма по клиентам за те же дни."""
+    merged: dict[str, dict[str, int]] = {}
+    for client in store.clients:
+        for date, value in (client.get("history") or {}).items():
+            day = merged.setdefault(date, {"rx": 0, "tx": 0})
+            day["rx"] += int(value.get("rx", 0))
+            day["tx"] += int(value.get("tx", 0))
+    return {
+        "days": _usage_series(merged, days),
+        "total": sum(int(c.get("traffic_total") or 0) for c in store.clients),
+    }
+
+
+def _usage_series(history: dict[str, Any], days: int) -> list[dict[str, Any]]:
+    """Ряд без дырок: дни простоя тоже нужны, иначе график врёт.
+
+    Без них график сжимает недельный простой в один пиксель, и выходит,
+    что клиент качал непрерывно.
+    """
+    import datetime as _dt
+
+    days = max(1, min(int(days or 30), 365))
+    today = _dt.datetime.utcnow().date()
+    out = []
+    for offset in range(days - 1, -1, -1):
+        date = (today - _dt.timedelta(days=offset)).strftime("%Y-%m-%d")
+        value = history.get(date) or {}
+        out.append({
+            "date": date,
+            "rx": int(value.get("rx", 0)),
+            "tx": int(value.get("tx", 0)),
+        })
+    return out
+
+
 @app.get("/api/wireguard/client/{key}/configuration", dependencies=[Depends(_authed)])
 async def client_config(key: str) -> PlainTextResponse:
     client = store.find(key)
@@ -307,6 +369,7 @@ async def health() -> dict[str, Any]:
         "random_trailers": bool(params.get("random_trailers")),
         "disable_cookies": bool(params.get("disable_cookies")),
         "clients": len(store.clients),
+        "shaper": config.SHAPER_ENABLED,
     }
 
 

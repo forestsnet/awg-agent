@@ -118,6 +118,15 @@
     </label>
 
     <label class="field">
+      Скорость
+      <div class="pair">
+        <input id="limit-rate" type="number" min="0" step="1" placeholder="0">
+        <span class="unit">Мбит/с</span>
+      </div>
+      <span class="hint">0 — не ограничивать</span>
+    </label>
+
+    <label class="field">
       Сбрасывать
       <select id="limit-period">
         <option value="none">не сбрасывать</option>
@@ -139,6 +148,19 @@
       <button type="submit" class="primary">Сохранить</button>
     </div>
   </form>
+</div>
+
+<div id="usage-modal" class="modal hidden">
+  <div class="modal-card wide">
+    <div class="modal-head"><b id="usage-title">Расход</b>
+      <button class="icon" data-close><span data-icon="close" data-size="16"></span></button></div>
+    <div class="usage-legend">
+      <span><i class="sw rx"></i>принято <b id="usage-rx">—</b></span>
+      <span><i class="sw tx"></i>отдано <b id="usage-tx">—</b></span>
+      <span class="muted" id="usage-total"></span>
+    </div>
+    <div id="usage-chart" class="chart"></div>
+  </div>
 </div>
 
 <div id="qr-modal" class="modal hidden">

@@ -208,7 +208,36 @@ def main() -> None:
                  "quota_period": "none"}
     check("без лимита не выключаем", quota.apply(unlimited, now) == [] and unlimited["enabled"])
 
-    print(f"\n{B}7. QR{N}")
+    print(f"\n{B}7. Шейпер и история{N}")
+    from agent import shaper
+
+    # Номер класса берём из адреса: он обязан быть стабильным, иначе
+    # после перестройки клиент попадёт в чужой класс — и в чужую скорость.
+    check("класс из адреса стабилен",
+          shaper.class_id("10.8.0.5") == shaper.class_id("10.8.0.5/32"))
+    check("у разных адресов разные классы",
+          shaper.class_id("10.8.0.5") != shaper.class_id("10.8.0.6"))
+    check("мусорный адрес не ломает", shaper.class_id("не адрес") == 0)
+
+    # Всплеск меньше пары десятков килобайт режет мелкие пачки пакетов:
+    # TCP не разгоняется, и человек видит «медленно» на выданной скорости.
+    check("всплеск не меньше 32 КБ", shaper.burst_bytes(1_000_000) >= 32 * 1024)
+    check("всплеск растёт со скоростью",
+          shaper.burst_bytes(100_000_000) > shaper.burst_bytes(10_000_000))
+
+    # История обрезается по датам, а не по числу записей: дни простоя в
+    # неё не попадают, и «последние 90 записей» растянулись бы на годы.
+    from agent import config as cfg2, state as st2
+    old_days = cfg2.HISTORY_DAYS
+    cfg2.HISTORY_DAYS = 3
+    client = {"history": {f"2026-01-0{i}": {"rx": i, "tx": 0} for i in range(1, 8)}}
+    st2._prune_history(client)
+    check("история подрезана", len(client["history"]) == 3)
+    check("выброшены самые старые", "2026-01-01" not in client["history"]
+          and "2026-01-07" in client["history"])
+    cfg2.HISTORY_DAYS = old_days
+
+    print(f"\n{B}8. QR{N}")
     # segno отдаёт svg БАЙТАМИ: на текстовом буфере ручка падала 500-й,
     # и это выяснилось уже на живой панели.
     import io as _io

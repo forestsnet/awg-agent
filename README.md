@@ -76,11 +76,30 @@ ForestsNet и веб-панелью.
 | PUT | `/api/wireguard/client/{id}/quota` | `{"bytes": 10737418240, "period": "month"}` |
 | POST | `/api/wireguard/client/{id}/quota/reset` | — |
 | PUT | `/api/wireguard/client/{id}/expires` | `{"at": "2026-12-31T23:59:59"}` или `{"at": null}` |
+| PUT | `/api/wireguard/client/{id}/rate` | `{"bps": 5000000}` |
+| GET | `/api/wireguard/client/{id}/usage?days=30` | — |
+| GET | `/api/usage?days=30` | — |
 
-`bytes: 0` снимает лимит, `period: "none"` — считать, но не сбрасывать.
+`bytes: 0` снимает лимит, `period: "none"` — считать, но не сбрасывать,
+`bps: 0` — не ограничивать скорость.
 В выдаче клиента появляются `quotaBytes`, `quotaUsed`, `quotaPeriod`,
 `quotaResetAt`, `trafficTotal`, `expiresAt` и `disabledReason`
 (`manual`, `quota`, `expired`).
+
+## Скорость и история
+
+Лимит трафика отвечает на вопрос «сколько всего», шейпер — «как быстро».
+Скорость режется `tc` прямо на wg-интерфейсе: скачивание — классами HTB
+по адресу назначения, отдача — policer'ом на ingress по адресу
+источника. Правила не правятся по одному, а перестраиваются целиком:
+diff-логика на `tc` — это способ однажды забыть снять чужое правило и
+долго не понимать, почему у клиента чужая скорость. Никому не ограничили
+— правил нет вовсе.
+
+Расход пишется по дням (`rx` и `tx` отдельно) и хранится
+`HISTORY_DAYS` дней. Ряд отдаётся без дырок: дни простоя приходят
+нулями, иначе график сжимает недельную паузу в пиксель и выходит, что
+клиент качал непрерывно.
 
 ## Запуск
 
@@ -121,6 +140,8 @@ docker run -d --name awg-agent \
 | `AWG_DISABLE_COOKIES` | `0` | `DisableCookies` (3.1) |
 | `WG_AUTO_UP` | `1` | Поднимать интерфейс при старте |
 | `QUOTA_TICK_SECONDS` | `10` | Как часто считать трафик и применять лимиты |
+| `HISTORY_DAYS` | `90` | Сколько дней хранить историю расхода |
+| `SHAPER_ENABLED` | `1` | Резать скорость через `tc` |
 | `STATS_TTL_SECONDS` | `1` | Кэш `awg show dump` |
 
 **Внимание:** клиент старее 3.0 к серверу с `HeaderProtectionKey` не
