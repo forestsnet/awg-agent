@@ -16,9 +16,10 @@ import logging
 import os
 import time
 import uuid
+from datetime import datetime
 from typing import Any, Optional
 
-from . import awg, config, proto, render
+from . import awg, config, proto, quota, render
 
 logger = logging.getLogger("state")
 
@@ -96,6 +97,15 @@ class Store:
                 "i1": proto.signature_packet(),
                 "created_at": item.get("createdAt") or _now(),
                 "updated_at": _now(),
+                # Лимитов у старой панели не было — заводим пустые.
+                "quota_bytes": 0,
+                "quota_period": "none",
+                "quota_used": 0,
+                "quota_started_at": _now(),
+                "traffic_total": 0,
+                "expires_at": None,
+                "disabled_reason": None,
+                "last_seen_total": 0,
             })
         logger.info(
             "импорт из amnezia-wg-easy: перенесено клиентов %d", len(self.clients)
@@ -104,7 +114,8 @@ class Store:
 
     # ── Запись ──────────────────────────────────────────────────────
 
-    async def persist(self) -> None:
+    async def persist_state(self) -> None:
+        """Только clients.json — конфиг интерфейса не трогаем."""
         payload = json.dumps(
             {"server": self.server, "clients": self.clients},
             ensure_ascii=False,
@@ -115,6 +126,8 @@ class Store:
             fh.write(payload)
         os.replace(tmp, config.STATE_PATH)
 
+    async def persist(self) -> None:
+        await self.persist_state()
         conf = render.server_conf(self.server, self.clients)
         tmp_conf = config.CONF_PATH + ".tmp"
         with open(tmp_conf, "w", encoding="utf-8") as fh:
@@ -160,6 +173,16 @@ class Store:
                 "i1": proto.signature_packet(),
                 "created_at": _now(),
                 "updated_at": _now(),
+                # Лимиты: 0 — без лимита, период сброса «none».
+                "quota_bytes": 0,
+                "quota_period": "none",
+                "quota_used": 0,
+                "quota_started_at": _now(),
+                "traffic_total": 0,
+                "expires_at": None,
+                "disabled_reason": None,
+                # Последний сырой счётчик пира: по нему считаем прирост.
+                "last_seen_total": 0,
             }
             self.clients.append(client)
             await self.apply()
@@ -179,10 +202,104 @@ class Store:
             client = self.find(key)
             if not client:
                 return False
+            was_blocked = client.get("disabled_reason") in (quota.QUOTA, quota.EXPIRED)
             client["enabled"] = enabled
+            client["disabled_reason"] = None if enabled else quota.MANUAL
+            # Включили того, кого выключил лимит, — начинаем новый период.
+            # Иначе следующий же тик выключит его обратно, и кнопка будет
+            # выглядеть сломанной.
+            if enabled and was_blocked:
+                client["quota_used"] = 0
+                client["quota_started_at"] = _now()
+                if quota.parse_iso(client.get("expires_at")) and \
+                        quota.parse_iso(client["expires_at"]) <= datetime.utcnow():
+                    client["expires_at"] = None
+            if not enabled:
+                # Счётчики пира уезжают вместе с ним из интерфейса.
+                client["last_seen_total"] = 0
             client["updated_at"] = _now()
             await self.apply()
             return True
+
+    async def set_quota(self, key: str, *, limit: int, period: str) -> bool:
+        async with self._lock:
+            client = self.find(key)
+            if not client:
+                return False
+            client["quota_bytes"] = max(0, int(limit))
+            client["quota_period"] = period if period in quota.PERIODS else "none"
+            client["quota_started_at"] = _now()
+            client["updated_at"] = _now()
+            await self.apply()
+            return True
+
+    async def reset_quota(self, key: str) -> bool:
+        async with self._lock:
+            client = self.find(key)
+            if not client:
+                return False
+            client["quota_used"] = 0
+            client["quota_started_at"] = _now()
+            if not client.get("enabled", True) and client.get("disabled_reason") == quota.QUOTA:
+                client["enabled"] = True
+                client["disabled_reason"] = None
+            client["updated_at"] = _now()
+            await self.apply()
+            return True
+
+    async def set_expires(self, key: str, value: Optional[str]) -> bool:
+        async with self._lock:
+            client = self.find(key)
+            if not client:
+                return False
+            client["expires_at"] = value or None
+            if value and not client.get("enabled", True) and \
+                    client.get("disabled_reason") == quota.EXPIRED:
+                # Срок продлили — клиента возвращаем, пусть решает тик.
+                client["enabled"] = True
+                client["disabled_reason"] = None
+            client["updated_at"] = _now()
+            await self.apply()
+            return True
+
+    # ── Учёт трафика и применение лимитов ───────────────────────────
+
+    async def tick(self) -> None:
+        """Прибавить трафик, пересчитать периоды, выключить перебравших.
+
+        Вызывается раз в QUOTA_TICK_SECONDS. Конфиг переписываем только
+        если состав включённых пиров изменился: файл трогать каждые
+        десять секунд незачем.
+        """
+        stats = await awg.peer_stats(force=True)
+        now = datetime.utcnow()
+        changed_membership = False
+
+        async with self._lock:
+            for client in self.clients:
+                live = stats.get(client.get("public_key")) or {}
+                if live:
+                    current = int(live.get("transfer_rx", 0)) + int(live.get("transfer_tx", 0))
+                    grew = quota.delta(int(client.get("last_seen_total") or 0), current)
+                    if grew:
+                        client["quota_used"] = int(client.get("quota_used") or 0) + grew
+                        client["traffic_total"] = int(client.get("traffic_total") or 0) + grew
+                    client["last_seen_total"] = current
+
+                was_enabled = client.get("enabled", True)
+                events = quota.apply(client, now)
+                if events:
+                    client["updated_at"] = _now()
+                    logger.info("клиент %s: %s", client.get("name"), ", ".join(events))
+                if client.get("enabled", True) != was_enabled:
+                    changed_membership = True
+                    if not client.get("enabled", True):
+                        client["last_seen_total"] = 0
+
+            if changed_membership:
+                await self.apply()
+            else:
+                await self.persist_state()
 
     async def rename(self, key: str, name: str) -> bool:
         async with self._lock:

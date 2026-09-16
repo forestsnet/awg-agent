@@ -147,7 +147,68 @@ def main() -> None:
         check("клиент ищется и по имени, и по id",
               store.find("старый") is store.find("id-1") is not None)
 
-    print(f"\n{B}6. QR{N}")
+    print(f"\n{B}6. Лимиты и сроки{N}")
+    from datetime import datetime as _dt, timedelta as _td
+
+    from agent import quota
+
+    # Счётчики пира живут ровно до его переустановки: рестарт
+    # интерфейса обнуляет их, и разница ушла бы в минус.
+    check("обычный прирост", quota.delta(100, 250) == 150)
+    check("счётчик обнулился — берём текущий", quota.delta(1000, 30) == 30)
+    check("без движения — ноль", quota.delta(500, 500) == 0)
+
+    # «Раз в месяц» для человека — то же число следующего месяца, а не
+    # тридцать суток.
+    check("день", quota.period_end(_dt(2026, 3, 10, 12), "day") == _dt(2026, 3, 11, 12))
+    check("неделя", quota.period_end(_dt(2026, 3, 10), "week") == _dt(2026, 3, 17))
+    check("месяц", quota.period_end(_dt(2026, 3, 10), "month") == _dt(2026, 4, 10))
+    check("31 января → 28 февраля",
+          quota.period_end(_dt(2026, 1, 31), "month") == _dt(2026, 2, 28))
+    check("29 февраля → 28 февраля следующего",
+          quota.period_end(_dt(2024, 2, 29), "year") == _dt(2025, 2, 28))
+    check("без периода — некуда", quota.period_end(_dt(2026, 3, 10), "none") is None)
+
+    now = _dt(2026, 3, 10, 12, 0, 0)
+    gb = 1024 ** 3
+
+    over = {"enabled": True, "quota_bytes": gb, "quota_used": gb + 10,
+            "quota_period": "none", "quota_started_at": quota.iso(now)}
+    check("перебрал лимит — выключаем", "quota_exceeded" in quota.apply(over, now))
+    check("причина записана", over["disabled_reason"] == quota.QUOTA)
+
+    # Новый период — клиент возвращается сам, руками ничего не делаем.
+    rolled = {"enabled": False, "disabled_reason": quota.QUOTA, "quota_bytes": gb,
+              "quota_used": gb + 10, "quota_period": "day",
+              "quota_started_at": quota.iso(now - _td(days=1, hours=1))}
+    events = quota.apply(rolled, now)
+    check("период сброшен", "quota_reset" in events and rolled["quota_used"] == 0)
+    check("и клиент включён обратно", rolled["enabled"] and rolled["disabled_reason"] is None)
+
+    # Простой на несколько периодов не должен требовать нескольких тиков.
+    stale = {"enabled": True, "quota_bytes": gb, "quota_used": 5, "quota_period": "day",
+             "quota_started_at": quota.iso(now - _td(days=5))}
+    quota.apply(stale, now)
+    check("пропущенные периоды догоняются за один раз",
+          quota.parse_iso(stale["quota_started_at"]) > now - _td(days=1))
+
+    expired = {"enabled": True, "expires_at": quota.iso(now - _td(minutes=1))}
+    check("срок вышел — выключаем", "expired" in quota.apply(expired, now))
+    check("и обратно сам не включится",
+          quota.apply(expired, now) == [] and not expired["enabled"])
+
+    # Выключенного руками лимиты не трогают: решение админа сильнее.
+    manual = {"enabled": False, "disabled_reason": quota.MANUAL, "quota_bytes": gb,
+              "quota_used": 0, "quota_period": "day", "quota_started_at": quota.iso(now)}
+    quota.apply(manual, now)
+    check("ручное выключение уважается",
+          not manual["enabled"] and manual["disabled_reason"] == quota.MANUAL)
+
+    unlimited = {"enabled": True, "quota_bytes": 0, "quota_used": 10 * gb,
+                 "quota_period": "none"}
+    check("без лимита не выключаем", quota.apply(unlimited, now) == [] and unlimited["enabled"])
+
+    print(f"\n{B}7. QR{N}")
     # segno отдаёт svg БАЙТАМИ: на текстовом буфере ручка падала 500-й,
     # и это выяснилось уже на живой панели.
     import io as _io

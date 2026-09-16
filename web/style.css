@@ -174,6 +174,22 @@ main{padding:18px 24px 56px}
 .traffic .rate{font-size:12px;color:var(--text-secondary);min-height:15px;padding-left:22px}
 .row-actions{display:flex;gap:8px;justify-content:flex-end}
 
+/* Лимит показываем только у тех, кому он задан: пустая полоска у всех
+   остальных — визуальный шум. */
+.quota{display:flex;align-items:center;gap:9px;margin-top:5px}
+.quota .bar{position:relative;flex:1;min-width:60px;max-width:180px;height:4px;border-radius:999px;
+  background:var(--backgrounds-secondary);overflow:hidden}
+.quota .bar i{position:absolute;inset:0 auto 0 0;background:var(--accent);border-radius:999px;
+  transition:width .3s ease}
+.quota.warn .bar i{background:var(--warning)}
+.quota.over .bar i{background:var(--danger)}
+.quota .qtext{font-size:12px;color:var(--text-secondary);white-space:nowrap}
+.tag{flex:none;padding:2px 9px;border-radius:999px;font-size:11.5px;font-weight:600;
+  background:var(--backgrounds-secondary);color:var(--text-secondary)}
+.tag.quota-tag{background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger)}
+.tag.expired-tag{background:color-mix(in srgb,var(--warning) 14%,transparent);color:var(--warning)}
+.who .name-line{display:flex;align-items:center;gap:8px;min-width:0}
+
 .empty{padding:80px 20px;text-align:center;color:var(--text-secondary)}
 .empty .badge{width:56px;height:56px;margin:0 auto 14px;border-radius:999px;display:grid;
   place-items:center;background:var(--backgrounds-secondary);color:var(--text-secondary)}
@@ -189,7 +205,19 @@ main{padding:18px 24px 56px}
 .modal-foot{display:flex;gap:10px;justify-content:flex-end;margin-top:20px}
 .modal-foot button,.modal-foot .button{min-width:116px}
 .field{display:flex;flex-direction:column;gap:7px;font-size:13px;color:var(--text-secondary)}
-.field input{width:100%}
+.field input,.field select{width:100%}
+.field .pair{display:flex;gap:8px}
+.field .pair input{flex:1}
+.field .pair select{width:96px}
+.field .hint{font-size:12px;color:var(--text-secondary)}
+select{font:inherit;font-weight:500;letter-spacing:-0.02em;background:var(--backgrounds);
+  border:1.5px solid var(--border);color:var(--text-primary);padding:9px 38px 9px 14px;
+  border-radius:999px;outline:none;cursor:pointer;appearance:none;
+  background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),
+    linear-gradient(135deg,currentColor 50%,transparent 50%);
+  background-position:calc(100% - 20px) 50%,calc(100% - 15px) 50%;
+  background-size:5px 5px,5px 5px;background-repeat:no-repeat}
+select:focus{border-color:var(--accent)}
 .qr{background:#fff;border-radius:24px;padding:16px;display:flex;justify-content:center}
 .qr svg{width:100%;height:auto;max-width:280px}
 .warn-badge{width:40px;height:40px;border-radius:999px;display:grid;place-items:center;

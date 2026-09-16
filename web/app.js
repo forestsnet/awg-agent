@@ -29,6 +29,7 @@ const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9"/>',
+  gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
 };
 
 const icon = (name, size = 18) =>
@@ -232,8 +233,14 @@ function rowTemplate(id) {
     <div class="who">
       <div class="avatar"></div>
       <div style="min-width:0">
-        <div class="name" data-act="rename" title="Нажмите, чтобы переименовать"></div>
+        <div class="name-line">
+          <div class="name" data-act="rename" title="Нажмите, чтобы переименовать"></div>
+          <span class="tag reason hidden"></span>
+        </div>
         <div class="meta"></div>
+        <div class="quota hidden">
+          <span class="bar"><i></i></span><span class="qtext"></span>
+        </div>
       </div>
     </div>
     <div class="shake"><span class="pill"></span><span class="ago"></span></div>
@@ -249,6 +256,7 @@ function rowTemplate(id) {
     </div>
     <div class="row-actions">
       <button class="icon" data-act="qr" title="QR и конфиг">${icon('qr', 17)}</button>
+      <button class="icon" data-act="limits" title="Лимит и срок">${icon('gauge', 17)}</button>
       <button class="icon" data-act="toggle">${icon('power', 17)}</button>
       <button class="icon warn" data-act="del" title="Удалить">${icon('trash', 17)}</button>
     </div>`;
@@ -303,6 +311,8 @@ function render() {
     }
     state.prev.set(c.id, { rx: c.transferRx || 0, tx: c.transferTx || 0, at: now });
 
+    renderQuota(row, c);
+
     const toggle = row.querySelector('[data-act="toggle"]');
     toggle.title = c.enabled ? 'Выключить' : 'Включить';
     toggle.classList.toggle('warn', c.enabled);
@@ -313,6 +323,111 @@ function render() {
   }
   renderStats();
 }
+
+const PERIOD_LABEL = {
+  none: 'без сброса', day: 'в день', week: 'в неделю', month: 'в месяц', year: 'в год',
+};
+
+const fmtDate = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+};
+
+// «Через сколько» показываем крупно: точная дата сброса счётчика никому
+// не нужна, а «через 3 дня» читается с одного взгляда.
+function fmtIn(iso) {
+  if (!iso) return '';
+  const s = (new Date(iso).getTime() - Date.now()) / 1000;
+  if (s <= 0) return 'вот-вот';
+  if (s < 3600) return `через ${Math.round(s / 60)} мин`;
+  if (s < 86400) return `через ${Math.round(s / 3600)} ч`;
+  return `через ${Math.round(s / 86400)} дн`;
+}
+
+function renderQuota(row, c) {
+  const box = row.querySelector('.quota');
+  const reason = row.querySelector('.reason');
+
+  const tag = c.disabledReason === 'quota' ? ['лимит', 'quota-tag']
+    : c.disabledReason === 'expired' ? ['срок истёк', 'expired-tag']
+    : c.enabled ? null : ['выключен', ''];
+  reason.classList.toggle('hidden', !tag);
+  if (tag) {
+    setText(reason, tag[0]);
+    reason.className = `tag reason ${tag[1]}`;
+  }
+
+  if (!c.quotaBytes && !c.expiresAt) { box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+
+  const parts = [];
+  if (c.quotaBytes) {
+    const share = Math.min(1, c.quotaUsed / c.quotaBytes);
+    box.querySelector('i').style.width = `${(share * 100).toFixed(1)}%`;
+    box.classList.toggle('warn', share >= 0.8 && share < 1);
+    box.classList.toggle('over', share >= 1);
+    box.querySelector('.bar').classList.remove('hidden');
+    parts.push(`${fmtBytes(c.quotaUsed)} из ${fmtBytes(c.quotaBytes)}`);
+    if (c.quotaPeriod !== 'none') parts.push(`сброс ${fmtIn(c.quotaResetAt)}`);
+  } else {
+    box.querySelector('.bar').classList.add('hidden');
+  }
+  if (c.expiresAt) parts.push(`до ${fmtDate(c.expiresAt)}`);
+  setText(box.querySelector('.qtext'), parts.join(' · '));
+}
+
+/* ── Лимит и срок ───────────────────────────────────────────────── */
+
+let limitsFor = null;
+
+function openLimits(client) {
+  limitsFor = client.id;
+  $('limits-title').textContent = `Лимит и срок — ${client.name}`;
+
+  // Показываем в той единице, в какой человек, скорее всего, и задавал.
+  const units = [1099511627776, 1073741824, 1048576];
+  const unit = units.find((u) => client.quotaBytes && client.quotaBytes % u === 0) || 1073741824;
+  $('limit-unit').value = String(unit);
+  $('limit-value').value = client.quotaBytes ? String(client.quotaBytes / unit) : '';
+  $('limit-period').value = client.quotaPeriod || 'none';
+  $('limit-expires').value = client.expiresAt ? client.expiresAt.slice(0, 10) : '';
+  openModal('limits-modal');
+  setTimeout(() => $('limit-value').focus(), 40);
+}
+
+$('limits-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!limitsFor) return;
+  const value = parseFloat($('limit-value').value || '0');
+  const bytes = Math.max(0, Math.round((isNaN(value) ? 0 : value) * Number($('limit-unit').value)));
+  const expires = $('limit-expires').value;
+  try {
+    await api(`/api/wireguard/client/${limitsFor}/quota`, {
+      method: 'PUT',
+      body: JSON.stringify({ bytes, period: $('limit-period').value }),
+    });
+    await api(`/api/wireguard/client/${limitsFor}/expires`, {
+      method: 'PUT',
+      // Срок отсчитываем до конца указанного дня, а не до его начала:
+      // «работает до 31-го» значит, что 31-е ещё рабочее.
+      body: JSON.stringify({ at: expires ? `${expires}T23:59:59` : null }),
+    });
+    closeModal('limits-modal');
+    toast(bytes ? `Лимит ${fmtBytes(bytes)} ${PERIOD_LABEL[$('limit-period').value]}` : 'Лимит снят');
+    await refresh();
+  } catch (err) { toast(err.message, 'err'); }
+});
+
+$('limit-reset').addEventListener('click', async () => {
+  if (!limitsFor) return;
+  try {
+    await api(`/api/wireguard/client/${limitsFor}/quota/reset`, { method: 'POST' });
+    closeModal('limits-modal');
+    toast('Счётчик обнулён');
+    await refresh();
+  } catch (err) { toast(err.message, 'err'); }
+});
 
 /* ── Действия ───────────────────────────────────────────────────── */
 
@@ -371,11 +486,16 @@ $('rows').addEventListener('click', async (e) => {
 
   try {
     if (el.dataset.act === 'qr') return openQr(client);
+    if (el.dataset.act === 'limits') return openLimits(client);
     if (el.dataset.act === 'rename') return startRename(el, client);
     if (el.dataset.act === 'toggle') {
       await api(`/api/wireguard/client/${id}/${client.enabled ? 'disable' : 'enable'}`,
         { method: 'POST' });
-      toast(client.enabled ? `«${client.name}» выключен` : `«${client.name}» включён`);
+      toast(client.enabled
+        ? `«${client.name}» выключен`
+        : client.disabledReason === 'quota'
+          ? `«${client.name}» включён, счётчик обнулён`
+          : `«${client.name}» включён`);
       return refresh();
     }
     if (el.dataset.act === 'del') {

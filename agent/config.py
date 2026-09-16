@@ -60,6 +60,9 @@ AWG_DISABLE_COOKIES = _flag("AWG_DISABLE_COOKIES", False)
 # ради него дёргать бинарник на каждый запрос.
 STATS_TTL_SECONDS = float(os.environ.get("STATS_TTL_SECONDS", "1") or 1)
 SESSION_MAX_AGE = _int("SESSION_MAX_AGE", 60 * 60 * 24)
+# Как часто пересчитываем трафик, лимиты и сроки. Реже — дешевле, но
+# клиент успеет прокачать больше сверх лимита, прежде чем его выключат.
+QUOTA_TICK_SECONDS = _int("QUOTA_TICK_SECONDS", 10)
 # Поднимать ли интерфейс при старте. Выключается, когда агент запускают
 # рядом с уже поднятым awg (отладка, миграция).
 WG_AUTO_UP = _flag("WG_AUTO_UP", True)

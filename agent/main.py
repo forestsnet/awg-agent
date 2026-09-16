@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, auth, awg, config, render
+from . import __version__, auth, awg, config, quota, render
 from .state import store
 
 logging.basicConfig(
@@ -46,6 +46,17 @@ class SessionIn(BaseModel):
 
 class ClientIn(BaseModel):
     name: str = Field(default="", max_length=120)
+
+
+class QuotaIn(BaseModel):
+    # 0 — снять лимит. Период «none» — считать, но не сбрасывать.
+    bytes: int = Field(default=0, ge=0)
+    period: str = "none"
+
+
+class ExpiresIn(BaseModel):
+    # ISO-строка или null, чтобы снять срок.
+    at: Optional[str] = None
 
 
 class NameIn(BaseModel):
@@ -72,6 +83,22 @@ async def _startup() -> None:
             # Не падаем: API должен отвечать даже когда интерфейс не
             # встал — иначе про причину узнать неоткуда.
             logger.error("интерфейс не поднялся: %s", exc)
+    asyncio.create_task(_quota_loop())
+
+
+async def _quota_loop() -> None:
+    """Учёт трафика, сброс периодов, выключение по лимиту и сроку.
+
+    Отдельной задачей, а не по запросу: клиент качает и когда панель
+    закрыта, а лимит должен срабатывать и тогда.
+    """
+    while True:
+        await asyncio.sleep(config.QUOTA_TICK_SECONDS)
+        try:
+            await store.tick()
+        except Exception:  # noqa: BLE001
+            # Сбой одного тика не должен уносить учёт целиком.
+            logger.exception("тик учёта не отработал")
 
 
 # ── Авторизация ─────────────────────────────────────────────────────
@@ -132,7 +159,25 @@ def _out(client: dict[str, Any], stats: dict[str, Any]) -> dict[str, Any]:
         "transferRx": live.get("transfer_rx", 0),
         "transferTx": live.get("transfer_tx", 0),
         "endpoint": live.get("endpoint"),
+        # Лимиты. Бот эти поля игнорирует (модель отбрасывает лишнее),
+        # а панели они нужны.
+        "quotaBytes": int(client.get("quota_bytes") or 0),
+        "quotaPeriod": client.get("quota_period") or "none",
+        "quotaUsed": int(client.get("quota_used") or 0),
+        "quotaResetAt": _quota_reset_at(client),
+        "trafficTotal": int(client.get("traffic_total") or 0),
+        "expiresAt": client.get("expires_at"),
+        "disabledReason": client.get("disabled_reason"),
     }
+
+
+def _quota_reset_at(client: dict[str, Any]) -> Optional[str]:
+    period = str(client.get("quota_period") or "none")
+    started = quota.parse_iso(client.get("quota_started_at"))
+    if period == "none" or not started:
+        return None
+    end = quota.period_end(started, period)
+    return quota.iso(end) if end else None
 
 
 @app.get("/api/wireguard/client", dependencies=[Depends(_authed)])
@@ -181,6 +226,35 @@ async def client_rename(key: str, payload: NameIn) -> dict[str, Any]:
     if not name:
         raise HTTPException(status_code=400, detail="Имя не задано")
     if not await store.rename(key, name):
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    return {"success": True}
+
+
+@app.put("/api/wireguard/client/{key}/quota", dependencies=[Depends(_authed)])
+async def client_quota(key: str, payload: QuotaIn) -> dict[str, Any]:
+    if payload.period not in quota.PERIODS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Период должен быть одним из: {', '.join(quota.PERIODS)}",
+        )
+    if not await store.set_quota(key, limit=payload.bytes, period=payload.period):
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    logger.info("лимит для %s: %s байт, период %s", key, payload.bytes, payload.period)
+    return {"success": True}
+
+
+@app.post("/api/wireguard/client/{key}/quota/reset", dependencies=[Depends(_authed)])
+async def client_quota_reset(key: str) -> dict[str, Any]:
+    if not await store.reset_quota(key):
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    return {"success": True}
+
+
+@app.put("/api/wireguard/client/{key}/expires", dependencies=[Depends(_authed)])
+async def client_expires(key: str, payload: ExpiresIn) -> dict[str, Any]:
+    if payload.at and not quota.parse_iso(payload.at):
+        raise HTTPException(status_code=400, detail="Дата должна быть в формате ISO")
+    if not await store.set_expires(key, payload.at):
         raise HTTPException(status_code=404, detail="Клиент не найден")
     return {"success": True}
 

@@ -99,6 +99,48 @@
   </form>
 </div>
 
+<div id="limits-modal" class="modal hidden">
+  <form class="modal-card" id="limits-form">
+    <div class="modal-head"><b id="limits-title">Лимит и срок</b>
+      <button type="button" class="icon" data-close><span data-icon="close" data-size="16"></span></button></div>
+
+    <label class="field">
+      Лимит трафика
+      <div class="pair">
+        <input id="limit-value" type="number" min="0" step="0.1" placeholder="0">
+        <select id="limit-unit">
+          <option value="1073741824">ГБ</option>
+          <option value="1099511627776">ТБ</option>
+          <option value="1048576">МБ</option>
+        </select>
+      </div>
+      <span class="hint">0 — без лимита</span>
+    </label>
+
+    <label class="field">
+      Сбрасывать
+      <select id="limit-period">
+        <option value="none">не сбрасывать</option>
+        <option value="day">раз в день</option>
+        <option value="week">раз в неделю</option>
+        <option value="month">раз в месяц</option>
+        <option value="year">раз в год</option>
+      </select>
+    </label>
+
+    <label class="field">
+      Работает до
+      <input id="limit-expires" type="date">
+      <span class="hint">Пусто — бессрочно</span>
+    </label>
+
+    <div class="modal-foot">
+      <button type="button" class="secondary" id="limit-reset">Обнулить счётчик</button>
+      <button type="submit" class="primary">Сохранить</button>
+    </div>
+  </form>
+</div>
+
 <div id="qr-modal" class="modal hidden">
   <div class="modal-card">
     <div class="modal-head"><b id="qr-name"></b>
