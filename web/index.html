@@ -3,18 +3,31 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark light">
-<title>AmneziaWG — forestsnet agent</title>
+<meta name="color-scheme" content="light dark">
+<title>AmneziaWG</title>
+<link rel="preload" href="/static/font/TTInterfaces-Medium.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/style.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🛡️</text></svg>">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<script>
+  /* Тему ставим до первой отрисовки, иначе тёмная страница успевает
+     моргнуть светлой. */
+  (() => {
+    const saved = localStorage.getItem('theme');
+    const dark = saved ? saved === 'dark'
+      : matchMedia('(prefers-color-scheme: dark)').matches;
+    if (dark) document.documentElement.setAttribute('data-theme', 'dark');
+  })();
+</script>
 </head>
 <body>
-<div id="login" class="screen">
-  <form id="login-form" class="card login">
+
+<div id="login" class="screen center hidden">
+  <form id="login-form" class="login">
+    <div class="mark" data-icon="shield" data-size="26"></div>
     <h1>AmneziaWG</h1>
-    <p class="muted">Панель управления сервером</p>
+    <p class="muted">Управление сервером</p>
     <input id="password" type="password" placeholder="Пароль" autocomplete="current-password" required>
-    <button type="submit">Войти</button>
+    <button type="submit" class="primary">Войти</button>
     <div id="login-error" class="error"></div>
   </form>
 </div>
@@ -22,38 +35,99 @@
 <div id="app" class="screen hidden">
   <header>
     <div class="brand">
-      <span class="dot" id="iface-dot"></span>
-      <b>AmneziaWG</b>
-      <span class="muted" id="server-info">—</span>
+      <div class="mark" data-icon="shield" data-size="20"></div>
+      <div style="min-width:0">
+        <div class="title">AmneziaWG</div>
+        <div class="sub muted" id="server-info">—</div>
+      </div>
+      <span class="state down" id="iface-state"><span class="dot"></span><span id="iface-text">проверяем</span></span>
     </div>
     <div class="actions">
-      <input id="search" type="search" placeholder="Поиск" autocomplete="off">
-      <button id="add-btn" class="primary">Добавить</button>
-      <button id="logout-btn" class="ghost">Выйти</button>
+      <label class="search">
+        <span data-icon="search" data-size="16"></span>
+        <input id="search" type="search" placeholder="Имя или адрес" autocomplete="off">
+      </label>
+      <button id="add-btn" class="primary"><span data-icon="plus" data-size="18"></span>Клиент</button>
+      <button id="theme-btn" class="icon" title="Тема"></button>
+      <button id="logout-btn" class="icon" title="Выйти"><span data-icon="logout" data-size="18"></span></button>
     </div>
   </header>
 
+  <section class="stats">
+    <div class="stat">
+      <div class="badge" data-icon="users" data-size="18"></div>
+      <div><div class="label">Клиентов</div><div class="value" id="s-total">0</div></div>
+    </div>
+    <div class="stat">
+      <div class="badge" data-icon="wifi" data-size="18"></div>
+      <div><div class="label">Онлайн</div><div class="value" id="s-online">0</div></div>
+    </div>
+    <div class="stat">
+      <div class="badge" data-icon="down" data-size="18"></div>
+      <div><div class="label">Принято</div><div class="value" id="s-rx">0</div>
+        <div class="rate" id="s-rx-rate">—</div></div>
+    </div>
+    <div class="stat">
+      <div class="badge" data-icon="up" data-size="18"></div>
+      <div><div class="label">Отдано</div><div class="value" id="s-tx">0</div>
+        <div class="rate" id="s-tx-rate">—</div></div>
+    </div>
+  </section>
+
   <main>
-    <div id="empty" class="empty hidden">Клиентов пока нет</div>
-    <table id="table">
-      <thead>
-        <tr>
-          <th>Имя</th><th>Адрес</th><th>Хендшейк</th><th class="num">↓</th><th class="num">↑</th><th></th>
-        </tr>
-      </thead>
-      <tbody id="rows"></tbody>
-    </table>
+    <div id="empty" class="empty hidden">
+      <div class="badge" data-icon="users" data-size="24"></div>
+      Клиентов пока нет — добавьте первого
+    </div>
+    <div id="rows" class="list"></div>
   </main>
+</div>
+
+<div id="create-modal" class="modal hidden">
+  <form class="modal-card" id="create-form">
+    <div class="modal-head"><b>Новый клиент</b>
+      <button type="button" class="icon" data-close><span data-icon="close" data-size="16"></span></button></div>
+    <label class="field">
+      Имя устройства
+      <input id="create-name" placeholder="iphone-artem" maxlength="120" required>
+    </label>
+    <div class="modal-foot">
+      <button type="button" class="secondary" data-close>Отмена</button>
+      <button type="submit" class="primary">Создать</button>
+    </div>
+  </form>
 </div>
 
 <div id="qr-modal" class="modal hidden">
   <div class="modal-card">
-    <div class="modal-head"><b id="qr-name"></b><button class="ghost" data-close>✕</button></div>
+    <div class="modal-head"><b id="qr-name"></b>
+      <button class="icon" data-close><span data-icon="close" data-size="16"></span></button></div>
     <div id="qr-body" class="qr"></div>
-    <a id="qr-download" class="primary button" download>Скачать .conf</a>
+    <div class="modal-foot">
+      <button class="secondary" id="qr-copy"><span data-icon="copy" data-size="16"></span>Скопировать</button>
+      <a id="qr-download" class="button primary" download><span data-icon="download" data-size="16"></span>Скачать</a>
+    </div>
   </div>
 </div>
 
+<div id="confirm-modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div style="display:flex;align-items:center;gap:12px">
+        <span class="warn-badge" data-icon="alert" data-size="20"></span>
+        <b id="confirm-title">Удалить?</b>
+      </div>
+      <button class="icon" data-close><span data-icon="close" data-size="16"></span></button>
+    </div>
+    <p id="confirm-text" class="muted" style="margin:0;font-size:15px"></p>
+    <div class="modal-foot">
+      <button class="secondary" data-close>Отмена</button>
+      <button class="danger" id="confirm-ok">Удалить</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts" class="toasts"></div>
 <script src="/static/app.js"></script>
 </body>
 </html>

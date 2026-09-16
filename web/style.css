@@ -1,58 +1,202 @@
+/* Оформление повторяет mhost-landing: те же токены, та же типографика,
+   те же радиусы. Панель агента — часть продукта, а не отдельная
+   вселенная, поэтому цвета и шрифт берём оттуда один в один. */
+
+@font-face{font-family:"TT Interfaces";src:url("/static/font/TTInterfaces-Regular.woff2") format("woff2");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"TT Interfaces";src:url("/static/font/TTInterfaces-Medium.woff2") format("woff2");font-weight:500;font-style:normal;font-display:swap}
+@font-face{font-family:"TT Interfaces";src:url("/static/font/TTInterfaces-SemiBold.woff2") format("woff2");font-weight:600;font-style:normal;font-display:swap}
+@font-face{font-family:"TT Interfaces";src:url("/static/font/TTInterfaces-Bold.woff2") format("woff2");font-weight:700;font-style:normal;font-display:swap}
+
 :root{
-  --bg:#0f1115; --card:#161a21; --line:#252b36; --text:#e6e9ef; --muted:#8b93a3;
-  --accent:#4f8cff; --ok:#2fbf71; --off:#6b7280; --danger:#ef4444; --radius:10px;
+  color-scheme:light;
+  --backgrounds:#f8fafc;
+  --backgrounds-secondary:#f1f5f9;
+  --backgrounds-cards:#ffffff;
+  --accent:#2563eb;
+  --accent-hover:#3b82f6;
+  --text-primary:#0f172a;
+  --text-body:#334155;
+  --text-secondary:#64748b;
+  --border:#e2e8f0;
+  --border-hover:#cbd5e1;
+  --success:#22c55e;
+  --warning:#f59e0b;
+  --danger:#ef4444;
+  --font-sans:"TT Interfaces",Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --font-mono:"JetBrains Mono","SF Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
 }
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --backgrounds:#0a0e17;
+  --backgrounds-secondary:#1b2436;
+  --backgrounds-cards:#131b2c;
+  --accent:#3b82f6;
+  --accent-hover:#60a5fa;
+  --text-primary:#f1f5f9;
+  --text-body:#cbd5e1;
+  --text-secondary:#94a3b8;
+  --border:#24304a;
+  --border-hover:#34445f;
+}
+
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);
-  font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-.hidden{display:none !important}
-.muted{color:var(--muted)}
-button,.button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--text);
-  padding:7px 12px;border-radius:var(--radius);cursor:pointer;text-decoration:none;display:inline-block}
-button:hover,.button:hover{border-color:#39435a}
-button.primary,.button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
-button.ghost{background:transparent}
-button.danger{color:var(--danger)}
-input{font:inherit;background:#0c0e13;border:1px solid var(--line);color:var(--text);
-  padding:7px 10px;border-radius:var(--radius);outline:none}
+body{
+  margin:0;background:var(--backgrounds);color:var(--text-primary);
+  font-family:var(--font-sans);font-size:16px;font-weight:500;
+  letter-spacing:-0.02em;line-height:150%;
+  text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased;
+  transition:background-color .3s ease,color .3s ease;
+}
+.hidden{display:none!important}
+.muted{color:var(--text-secondary)}
+.mono{font-family:var(--font-mono);letter-spacing:0}
+svg{display:block}
+
+/* ── Кнопки: пилюли, как на лендинге ───────────────────────────── */
+button,.button{
+  font:inherit;font-weight:600;letter-spacing:-0.02em;cursor:pointer;
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  padding:9px 16px;border:2px solid transparent;border-radius:999px;
+  background:var(--backgrounds-secondary);color:var(--text-primary);
+  text-decoration:none;transition:background .18s ease,border-color .18s ease,
+    transform .18s ease,box-shadow .18s ease;
+}
+button:hover,.button:hover{transform:translateY(-1px)}
+button:active,.button:active{transform:translateY(0)}
+button.primary,.button.primary{background:var(--accent);color:#fff}
+button.primary:hover,.button.primary:hover{
+  background:var(--accent-hover);box-shadow:0 10px 20px rgba(37,99,235,.25)}
+button.secondary{background:transparent;border-color:var(--border-hover);color:var(--text-primary)}
+button.secondary:hover{border-color:var(--accent);color:var(--accent)}
+button.danger{background:var(--danger);color:#fff}
+button.danger:hover{box-shadow:0 10px 20px rgba(239,68,68,.25)}
+button:disabled{opacity:.5;cursor:default;transform:none}
+
+/* Иконочная кнопка — круг 36px */
+button.icon{padding:0;width:36px;height:36px;border-radius:999px;
+  background:transparent;border:1.5px solid var(--border);color:var(--text-secondary)}
+button.icon:hover{border-color:var(--border-hover);color:var(--text-primary);background:var(--backgrounds-secondary)}
+button.icon.warn:hover{border-color:var(--danger);color:var(--danger);background:transparent}
+
+input{
+  font:inherit;font-weight:500;letter-spacing:-0.02em;
+  background:var(--backgrounds);border:1.5px solid var(--border);color:var(--text-primary);
+  padding:9px 14px;border-radius:999px;outline:none;transition:border-color .18s ease;
+}
 input:focus{border-color:var(--accent)}
+input::placeholder{color:var(--text-secondary)}
 
+/* ── Экраны ────────────────────────────────────────────────────── */
 .screen{min-height:100vh}
-.login{max-width:340px;margin:14vh auto;display:flex;flex-direction:column;gap:10px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px}
-.login h1{margin:0;font-size:20px}
-.login p{margin:0 0 6px}
-.error{color:var(--danger);min-height:18px;font-size:13px}
+.center{display:flex;align-items:center;justify-content:center;padding:24px}
+.login{
+  width:100%;max-width:360px;display:flex;flex-direction:column;gap:14px;text-align:center;
+  background:var(--backgrounds-cards);border:1px solid var(--border);
+  border-radius:30px;padding:36px 30px;
+}
+.login .mark{width:52px;height:52px;margin:0 auto;border-radius:999px;display:grid;
+  place-items:center;background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--accent)}
+.login h1{margin:0;font-size:22px;font-weight:600;line-height:120%}
+.login p{margin:0 0 6px;font-size:15px}
+.login input,.login button{width:100%}
+.error{color:var(--danger);min-height:20px;font-size:14px;font-weight:500}
 
-header{display:flex;justify-content:space-between;align-items:center;gap:12px;
-  padding:14px 20px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:5}
-.brand{display:flex;align-items:center;gap:9px}
-.actions{display:flex;gap:8px;align-items:center}
-.dot{width:9px;height:9px;border-radius:50%;background:var(--off);box-shadow:0 0 0 3px rgba(255,255,255,.04)}
-.dot.up{background:var(--ok)}
+header{
+  display:flex;justify-content:space-between;align-items:center;gap:16px;
+  padding:16px 24px;position:sticky;top:0;z-index:5;
+  background:color-mix(in srgb,var(--backgrounds) 88%,transparent);
+  backdrop-filter:blur(10px);border-bottom:1px solid var(--border);
+}
+.brand{display:flex;align-items:center;gap:12px;min-width:0}
+.brand .mark{width:40px;height:40px;flex:none;border-radius:999px;display:grid;place-items:center;
+  background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--accent)}
+.brand .title{font-weight:600;font-size:17px;line-height:120%}
+.brand .sub{font-size:13px;line-height:140%;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;max-width:44vw}
+.actions{display:flex;gap:10px;align-items:center}
+.actions .search{position:relative;display:flex;align-items:center}
+.actions .search svg{position:absolute;left:13px;color:var(--text-secondary);pointer-events:none}
+.actions .search input{padding-left:38px;width:240px}
 
-main{padding:16px 20px 40px}
-table{width:100%;border-collapse:collapse}
-th{text-align:left;font-weight:500;color:var(--muted);font-size:12px;
-  text-transform:uppercase;letter-spacing:.04em;padding:6px 10px}
-td{padding:9px 10px;border-top:1px solid var(--line);vertical-align:middle}
-tr.off td{opacity:.45}
-.num{text-align:right}
-td.num{font-variant-numeric:tabular-nums;color:var(--muted)}
-.name{display:flex;align-items:center;gap:8px}
-.name .pill{width:8px;height:8px;border-radius:50%;background:var(--off);flex:none}
-.name .pill.live{background:var(--ok)}
-.addr{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}
-.row-actions{display:flex;gap:6px;justify-content:flex-end}
-.empty{padding:60px 0;text-align:center;color:var(--muted)}
+.state{display:inline-flex;align-items:center;gap:7px;padding:4px 12px 4px 9px;border-radius:999px;
+  font-size:13px;font-weight:600;background:color-mix(in srgb,var(--success) 12%,transparent);
+  color:var(--success)}
+.state.down{background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger)}
+.state .dot{width:7px;height:7px;border-radius:999px;background:currentColor}
 
-.modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:20px;z-index:10}
-.modal-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;max-width:380px;width:100%}
-.modal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
-.qr{background:#fff;border-radius:10px;padding:10px;display:flex;justify-content:center}
-.qr svg{width:100%;height:auto;max-width:300px}
-.modal-card .button{margin-top:12px;width:100%;text-align:center}
-@media (max-width:640px){
-  th:nth-child(3),td:nth-child(3){display:none}
-  header{flex-direction:column;align-items:stretch}
+/* ── Плитки статистики ─────────────────────────────────────────── */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;padding:22px 24px 6px}
+.stat{background:var(--backgrounds-cards);border:1px solid var(--border);border-radius:24px;
+  padding:16px 18px;display:flex;gap:14px;align-items:center}
+.stat .badge{width:38px;height:38px;flex:none;border-radius:999px;display:grid;place-items:center;
+  background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--accent)}
+.stat .label{font-size:13px;color:var(--text-secondary);line-height:130%}
+.stat .value{font-size:24px;font-weight:600;line-height:120%;font-variant-numeric:tabular-nums}
+.stat .rate{font-size:12.5px;color:var(--text-secondary);font-variant-numeric:tabular-nums}
+
+/* ── Список клиентов ───────────────────────────────────────────── */
+main{padding:18px 24px 56px}
+.list{display:flex;flex-direction:column;gap:10px}
+.row{
+  display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1.1fr) minmax(0,1.2fr) auto;
+  align-items:center;gap:18px;background:var(--backgrounds-cards);
+  border:1px solid var(--border);border-radius:24px;padding:14px 18px;
+  transition:border-color .18s ease;
+}
+.row:hover{border-color:var(--border-hover)}
+.row.off{opacity:.55}
+.who{display:flex;align-items:center;gap:13px;min-width:0}
+.avatar{width:40px;height:40px;flex:none;border-radius:999px;display:grid;place-items:center;
+  font-size:14px;font-weight:600;letter-spacing:0}
+.who .name{font-weight:600;font-size:16px;line-height:130%;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;cursor:text}
+.who .name input{padding:2px 10px;font-size:15px;width:100%;border-radius:10px}
+.who .meta{font-size:13px;color:var(--text-secondary);font-family:var(--font-mono);letter-spacing:0;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.shake{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--text-body)}
+.shake .pill{width:8px;height:8px;border-radius:999px;background:var(--text-secondary);flex:none}
+.shake .pill.live{background:var(--success);box-shadow:0 0 0 4px color-mix(in srgb,var(--success) 18%,transparent)}
+.traffic{display:flex;gap:20px;font-variant-numeric:tabular-nums}
+.traffic .col{display:flex;flex-direction:column;gap:1px}
+.traffic .val{display:flex;align-items:center;gap:6px;font-size:14px}
+.traffic .val svg{color:var(--text-secondary)}
+.traffic .rate{font-size:12px;color:var(--text-secondary);min-height:15px;padding-left:22px}
+.row-actions{display:flex;gap:8px;justify-content:flex-end}
+
+.empty{padding:80px 20px;text-align:center;color:var(--text-secondary)}
+.empty .badge{width:56px;height:56px;margin:0 auto 14px;border-radius:999px;display:grid;
+  place-items:center;background:var(--backgrounds-secondary);color:var(--text-secondary)}
+
+/* ── Модалки и тосты ───────────────────────────────────────────── */
+.modal{position:fixed;inset:0;background:rgba(6,10,18,.55);backdrop-filter:blur(3px);
+  display:flex;align-items:center;justify-content:center;padding:22px;z-index:20}
+.modal-card{background:var(--backgrounds-cards);border:1px solid var(--border);border-radius:30px;
+  padding:24px;max-width:400px;width:100%;animation:pop .14s ease-out}
+@keyframes pop{from{transform:translateY(8px);opacity:0}to{transform:none;opacity:1}}
+.modal-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px}
+.modal-head b{font-size:18px;font-weight:600;line-height:130%}
+.modal-foot{display:flex;gap:10px;justify-content:flex-end;margin-top:20px}
+.modal-foot button,.modal-foot .button{min-width:116px}
+.field{display:flex;flex-direction:column;gap:7px;font-size:13px;color:var(--text-secondary)}
+.field input{width:100%}
+.qr{background:#fff;border-radius:24px;padding:16px;display:flex;justify-content:center}
+.qr svg{width:100%;height:auto;max-width:280px}
+.warn-badge{width:40px;height:40px;border-radius:999px;display:grid;place-items:center;
+  background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger);flex:none}
+
+.toasts{position:fixed;right:20px;bottom:20px;display:flex;flex-direction:column;gap:10px;z-index:30}
+.toast{display:flex;align-items:center;gap:10px;background:var(--backgrounds-cards);
+  border:1px solid var(--border);border-radius:999px;padding:10px 18px;font-size:14px;
+  box-shadow:0 12px 28px rgba(8,12,24,.16);animation:pop .14s ease-out;transition:opacity .2s}
+.toast .ic{color:var(--success);flex:none}
+.toast.err .ic{color:var(--danger)}
+
+@media (max-width:900px){
+  .stats{grid-template-columns:repeat(2,1fr)}
+  .row{grid-template-columns:minmax(0,1fr) auto;gap:12px}
+  .row .shake,.row .traffic{grid-column:1/-1}
+  header{flex-direction:column;align-items:stretch;gap:12px}
+  .actions .search{flex:1}
+  .actions .search input{width:100%}
+  .brand .sub{max-width:none}
 }
