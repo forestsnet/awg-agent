@@ -147,6 +147,28 @@ def main() -> None:
         check("клиент ищется и по имени, и по id",
               store.find("старый") is store.find("id-1") is not None)
 
+    print(f"\n{B}6. QR{N}")
+    # segno отдаёт svg БАЙТАМИ: на текстовом буфере ручка падала 500-й,
+    # и это выяснилось уже на живой панели.
+    import io as _io
+
+    try:
+        import segno
+    except ImportError:
+        # Локально без установленных зависимостей проверка пропускается,
+        # в CI они ставятся и она отрабатывает.
+        print("  · пропущено: segno не установлен")
+        segno = None
+
+    buf = _io.BytesIO() if segno else None
+    if segno:
+        segno.make(cli, error="m").save(buf, kind="svg", scale=5, border=2,
+                                        dark="#0f172a", light="#ffffff")
+        data = buf.getvalue()
+        check("qr отдаётся байтами", isinstance(data, bytes) and len(data) > 500)
+        check("это действительно svg",
+              data.lstrip()[:4] == b"<?xm" or b"<svg" in data[:200])
+
     if failures:
         print(f"\n{R}Провалено: {len(failures)}{N}")
         for f in failures:

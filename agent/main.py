@@ -207,9 +207,11 @@ async def client_qr(key: str) -> Response:
 
     import segno
 
-    buf = io.StringIO()
+    # BytesIO, а не StringIO: svg-писатель segno отдаёт байты, и на
+    # текстовом буфере падал с TypeError уже в проде-превью.
+    buf = io.BytesIO()
     segno.make(render.client_conf(store.server, client), error="m").save(
-        buf, kind="svg", scale=5, dark="#111", light="#fff"
+        buf, kind="svg", scale=5, border=2, dark="#0f172a", light="#ffffff"
     )
     return Response(buf.getvalue(), media_type="image/svg+xml")
 
