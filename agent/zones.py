@@ -23,13 +23,27 @@ import ipaddress
 import logging
 from typing import Any, Iterable, Optional
 
-from . import config
+from . import config, upstream
 
 logger = logging.getLogger("zones")
 
 # Своя цепочка: чужие правила (docker, fail2ban) не трогаем, свои —
 # всегда можем снести целиком и собрать заново.
 CHAIN = "FSNT-ZONES"
+
+# Таблицы маршрутов для «выходной ноды»: обычный трафик техника уходит
+# не через адрес бастиона, а через выбранный туннель. Нужно не для
+# красоты — техник лезет на клиентские машины для диагностики, и
+# светить туда свой домашний адрес (и адрес бастиона заодно) не надо.
+#
+# Правила висят в своём диапазоне приоритетов: чужие политики (docker,
+# vpn провайдера) не трогаем, свои — сносим целиком и ставим заново.
+RULE_PRIORITY_BASE = 17000
+TABLE_BASE = 170
+
+# Ставили ли мы политики хоть раз: у обычного сервера их нет и не
+# будет, и дёргать `ip rule` на каждое изменение клиента незачем.
+_routing_installed = False
 
 
 async def _run(*args: str, quiet: bool = False) -> bool:
@@ -93,6 +107,17 @@ def zone_of(client: dict[str, Any], zones: list[dict[str, Any]]) -> Optional[dic
     return None
 
 
+def exit_of(zone: Optional[dict[str, Any]]) -> Optional[str]:
+    """Через какой туннель у зоны уходит обычный трафик.
+
+    Пусто — через сам бастион, как было. Имя апстрима — значит наружу
+    техник выходит его адресом.
+    """
+    if not zone or not zone.get("internet"):
+        return None
+    return zone.get("exit") or None
+
+
 def client_allowed_ips(zone: Optional[dict[str, Any]], default: str) -> str:
     """Что писать клиенту в AllowedIPs.
 
@@ -107,6 +132,63 @@ def client_allowed_ips(zone: Optional[dict[str, Any]], default: str) -> str:
     if zone.get("internet"):
         return default
     return ", ".join(cidrs) if cidrs else default
+
+
+async def _reset_routing(upstreams: list[dict[str, Any]]) -> None:
+    """Снять свои правила политики и очистить свои таблицы."""
+    # Правила удаляем по приоритету: так не заденем чужие, даже если
+    # адреса совпали.
+    for index in range(len(upstreams) + 8):
+        priority = RULE_PRIORITY_BASE + index
+        # На один приоритет правил бывает несколько (переживший
+        # перезапуск дубль), но цикл ограничен: `ip` на некоторых
+        # системах возвращает ноль даже когда удалять нечего, и
+        # «пока удаляется» превращалось в вечный цикл.
+        for _ in range(4):
+            if not await _run("ip", "rule", "del", "priority", str(priority), quiet=True):
+                break
+    for index in range(len(upstreams) + 8):
+        await _run("ip", "route", "flush", "table", str(TABLE_BASE + index), quiet=True)
+
+
+async def _apply_routing(
+    clients: list[dict[str, Any]],
+    zones: list[dict[str, Any]],
+    upstreams: list[dict[str, Any]],
+) -> int:
+    """Развести обычный трафик техников по выходным туннелям."""
+    global _routing_installed
+    table_of: dict[str, int] = {
+        item["name"]: TABLE_BASE + i for i, item in enumerate(upstreams or [])
+    }
+    plan = []
+    for client in clients:
+        address = str(client.get("address") or "").split("/")[0]
+        name = exit_of(zone_of(client, zones))
+        if address and name and name in table_of:
+            plan.append((address, name, table_of[name]))
+    if not plan and not _routing_installed:
+        # Выходных нод не было и нет: обычный сервер про политики
+        # маршрутизации знать не должен вовсе.
+        return 0
+
+    await _reset_routing(upstreams)
+    _routing_installed = bool(plan)
+    routed = 0
+    priority = RULE_PRIORITY_BASE
+    for address, name, table in plan:
+        iface = upstream.iface_of(name)
+        # default в своей таблице: основную не трогаем вовсе, иначе
+        # туда же уедет и трафик самого сервера.
+        await _run("ip", "route", "replace", "default", "dev", iface,
+                   "table", str(table), quiet=True)
+        await _run("ip", "rule", "add", "from", f"{address}/32",
+                   "lookup", str(table), "priority", str(priority))
+        priority += 1
+        routed += 1
+    if routed:
+        logger.info("выходная нода: %d техник(ов) выходят через туннель", routed)
+    return routed
 
 
 async def _reset() -> None:
@@ -124,9 +206,14 @@ async def _reset() -> None:
 _installed = False
 
 
-async def apply(clients: list[dict[str, Any]], zones: list[dict[str, Any]]) -> None:
+async def apply(
+    clients: list[dict[str, Any]],
+    zones: list[dict[str, Any]],
+    upstreams: Optional[list[dict[str, Any]]] = None,
+) -> None:
     """Перестроить правила зон под текущее состояние."""
     global _installed
+    await _apply_routing(clients, zones, upstreams or [])
     protected = protected_cidrs(zones)
     if not protected and not _installed:
         # Зон не было и нет: сервер ведёт себя ровно как раньше.

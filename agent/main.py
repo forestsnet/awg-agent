@@ -74,6 +74,10 @@ class ZoneIn(BaseModel):
     # Выпускать ли такого клиента ещё и в интернет. По умолчанию нет:
     # техник заходит за конкретными адресами, а не сёрфить.
     internet: bool = False
+    # Через какой туннель уходит этот обычный трафик. Пусто — через сам
+    # бастион. Нужно, когда техник лезет на клиентские машины и светить
+    # туда свой адрес не надо.
+    exit: Optional[str] = None
 
 
 class ZonePatch(BaseModel):
@@ -81,6 +85,7 @@ class ZonePatch(BaseModel):
     cidrs: Optional[list[str]] = None
     upstream: Optional[str] = None
     internet: Optional[bool] = None
+    exit: Optional[str] = None
 
 
 class ClientZoneIn(BaseModel):
@@ -470,7 +475,8 @@ async def zone_create(payload: ZoneIn) -> dict[str, Any]:
     if bad:
         raise HTTPException(status_code=400, detail=f"Не подсеть: {bad[0]}")
     return await store.create_zone(
-        name, payload.cidrs, upstream=payload.upstream, internet=payload.internet
+        name, payload.cidrs, upstream=payload.upstream,
+        internet=payload.internet, exit=payload.exit,
     )
 
 
@@ -603,7 +609,13 @@ async def topology() -> dict[str, Any]:
             "label": zone.get("name"),
             "cidrs": zone.get("cidrs") or [],
             "internet": bool(zone.get("internet")),
+            "exit": zone.get("exit"),
         })
+        if zone.get("exit") and zone["exit"] != zone.get("upstream"):
+            edges.append({
+                "from": f"zone:{zone['id']}",
+                "to": f"upstream:{zone['exit']}",
+            })
         if zone.get("upstream"):
             edges.append({
                 "from": f"zone:{zone['id']}",

@@ -208,7 +208,7 @@ class Store:
         except Exception:  # noqa: BLE001
             logger.exception("апстримы не применились")
         try:
-            await zones.apply(self.clients, self.zones)
+            await zones.apply(self.clients, self.zones, self.upstreams)
         except Exception:  # noqa: BLE001
             logger.exception("зоны не применились")
 
@@ -406,7 +406,7 @@ class Store:
 
     async def create_zone(
         self, name: str, cidrs: list[str], *, upstream: str | None = None,
-        internet: bool = False,
+        internet: bool = False, exit: str | None = None,
     ) -> dict[str, Any]:
         async with self._lock:
             zone = {
@@ -415,6 +415,9 @@ class Store:
                 "cidrs": zones.normalize_cidrs(cidrs),
                 "upstream": upstream or None,
                 "internet": bool(internet),
+                # Через какой туннель уходит обычный трафик. Пусто —
+                # через сам бастион.
+                "exit": exit or None,
                 "created_at": _now(),
                 "updated_at": _now(),
             }
@@ -430,7 +433,7 @@ class Store:
             if "cidrs" in fields:
                 fields["cidrs"] = zones.normalize_cidrs(fields["cidrs"])
             for key, value in fields.items():
-                if key in ("name", "cidrs", "upstream", "internet"):
+                if key in ("name", "cidrs", "upstream", "internet", "exit"):
                     zone[key] = value
             zone["updated_at"] = _now()
             await self.apply()
@@ -529,6 +532,10 @@ class Store:
             for zone in self.zones:
                 if zone.get("upstream") == name:
                     zone["upstream"] = None
+                if zone.get("exit") == name:
+                    # Выход убрали — обычный трафик возвращается на
+                    # адрес бастиона, а не пропадает.
+                    zone["exit"] = None
             await self.apply()
             return True
 

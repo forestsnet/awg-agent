@@ -480,6 +480,38 @@ def main() -> None:
         zn._run = real_run
     check("без зон сервер живёт как раньше", calls == [], str(calls[:2]))
 
+    print(f"\n{B}  · выходная нода{N}")
+    # Техник лезет на клиентские машины для диагностики: светить туда
+    # свой домашний адрес не надо, поэтому обычный трафик можно увести
+    # в выбранный туннель.
+    exit_zone = {"id": "z9", "name": "Диагностика", "cidrs": ["10.60.0.0/16"],
+                 "internet": True, "exit": "tube"}
+    check("выход зоны читается", zn.exit_of(exit_zone) == "tube")
+    check("без интернета выход не имеет смысла",
+          zn.exit_of({**exit_zone, "internet": False}) is None)
+    check("без выхода — через сам бастион", zn.exit_of({**exit_zone, "exit": None}) is None)
+
+    calls.clear()
+    zn._routing_installed = False
+    zn._run = _fake_run
+    try:
+        _aio.run(zn.apply(
+            [{"address": "10.8.0.7", "zone_id": "z9"},
+             {"address": "10.8.0.8", "zone_id": "z1"}],
+            [exit_zone, zone],
+            [{"name": "tube"}],
+        ))
+    finally:
+        zn._run = real_run
+    joined = "\n".join(calls)
+    check("трафик техника уходит в туннель",
+          "ip rule add from 10.8.0.7/32 lookup 170" in joined, joined[:200])
+    # Главное: основную таблицу не трогаем, иначе туда же уедет трафик
+    # самого сервера вместе с нашим SSH.
+    check("своя таблица, а не основная",
+          "ip route replace default dev up-tube table 170" in joined)
+    check("остальных не трогаем", "10.8.0.8/32 lookup" not in joined)
+
     print(f"\n{B}  · апстримы{N}")
     conf = (
         "[Interface]\nPrivateKey = k\nAddress = 10.40.0.126/24\n"
