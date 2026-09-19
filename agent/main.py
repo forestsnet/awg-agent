@@ -373,8 +373,13 @@ async def client_qr(key: str) -> Response:
     # BytesIO, а не StringIO: svg-писатель segno отдаёт байты, и на
     # текстовом буфере падал с TypeError уже в проде-превью.
     buf = io.BytesIO()
-    segno.make(render.client_conf(store.server, client), error="m").save(
-        buf, kind="svg", scale=5, border=2, dark="#0f172a", light="#ffffff"
+    # Коррекция «L» и рамка в 4 модуля — не вкусовщина. Конфиг AmneziaWG
+    # с параметрами обфускации весит под килобайт, и на «M» код уходит
+    # на пару версий выше: модулей больше, каждый мельче, телефон его не
+    # ловит. Рамка в 4 модуля — требование стандарта, с двумя сканеры
+    # цепляют фон карточки.
+    segno.make(render.client_conf(store.server, client), error="l").save(
+        buf, kind="svg", scale=8, border=4, dark="#0f172a", light="#ffffff"
     )
     return Response(buf.getvalue(), media_type="image/svg+xml")
 
