@@ -395,7 +395,110 @@ def main() -> None:
           and "ip6tables" not in rnd6.server_conf(srv6, [cli6]))
     cfg6.WG_IPV6 = True
 
-    print(f"\n{B}9. QR{N}")
+    print(f"\n{B}9. Бастион: зоны и апстримы{N}")
+    # Задача: три техника и доступ к IPMI через один конфиг, который не
+    # хочется раздавать. Разные `AllowedIPs` в файлах — не ограничение,
+    # а просьба: файл лежит у человека. Поэтому решает сервер.
+    import asyncio as _aio
+
+    from agent import upstream as ups
+    from agent import zones as zn
+
+    print(f"\n{B}  · разбор подсетей{N}")
+    check("одиночный адрес считается /32", zn.valid_cidr("10.30.247.190") == "10.30.247.190/32")
+    check("мусор отбрасывается", zn.valid_cidr("ipmi.local") is None)
+    check("дубли схлопываются",
+          zn.normalize_cidrs(["10.30.0.0/16", "10.30.0.0/16", "нет"]) == ["10.30.0.0/16"])
+
+    zone = {"id": "z1", "name": "IPMI", "cidrs": ["10.30.0.0/16"], "internet": False}
+    print(f"\n{B}  · что уезжает клиенту{N}")
+    check("технику — только его подсети",
+          zn.client_allowed_ips(zone, "0.0.0.0/0, ::/0") == "10.30.0.0/16")
+    check("с интернетом — как обычно",
+          zn.client_allowed_ips({**zone, "internet": True}, "0.0.0.0/0") == "0.0.0.0/0")
+    check("без зоны ничего не меняется",
+          zn.client_allowed_ips(None, "0.0.0.0/0") == "0.0.0.0/0")
+
+    print(f"\n{B}  · правила на сервере{N}")
+    calls: list[str] = []
+
+    async def _fake_run(*args, quiet=False):
+        calls.append(" ".join(args))
+        return True
+
+    real_run, zn._run = zn._run, _fake_run
+    zn._installed = False
+    try:
+        _aio.run(zn.apply(
+            [{"address": "10.8.0.2", "zone_id": "z1"},
+             {"address": "10.8.0.3", "zone_id": None}],
+            [zone, {"id": "z2", "cidrs": ["194.36.177.0/24"]}],
+        ))
+    finally:
+        zn._run = real_run
+    joined = "\n".join(calls)
+    check("технику открыта его подсеть",
+          "-A FSNT-ZONES -s 10.8.0.2/32 -d 10.30.0.0/16 -j ACCEPT" in joined)
+    # Главное во всей затее: чужая зона закрыта, даже если техник
+    # пропишет её себе в конфиг руками.
+    check("чужая зона ему закрыта",
+          "-A FSNT-ZONES -s 10.8.0.2/32 -d 194.36.177.0/24 -j DROP" in joined)
+    check("зона без интернета не выпускает наружу",
+          "-A FSNT-ZONES -s 10.8.0.2/32 -j DROP" in joined)
+    # Обычный клиент VPN не должен видеть служебные сети только потому,
+    # что сервер до них дотягивается.
+    check("клиент без зоны в служебные сети не ходит",
+          "-A FSNT-ZONES -s 10.8.0.3/32 -d 10.30.0.0/16 -j DROP" in joined)
+    check("ответы установленных соединений пропускаем",
+          "conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT" in joined)
+    check("цепочка подключена первой", "-I FORWARD 1" in joined)
+
+    # Последнюю зону удалили — правила обязаны сняться, иначе доступ
+    # останется у тех, у кого его больше нет.
+    calls.clear()
+    zn._run = _fake_run
+    try:
+        _aio.run(zn.apply([{"address": "10.8.0.2"}], []))
+    finally:
+        zn._run = real_run
+    check("удаление последней зоны снимает правила",
+          any("-D FORWARD" in c for c in calls) and any("-X" in c for c in calls))
+
+    # А сервер, у которого зон никогда не было, iptables вообще не
+    # трогает: у обычного VPN их нет, и лишние вызовы — только шум в
+    # логе на каждое изменение клиента.
+    calls.clear()
+    zn._installed = False
+    zn._run = _fake_run
+    try:
+        _aio.run(zn.apply([{"address": "10.8.0.2"}], []))
+    finally:
+        zn._run = real_run
+    check("без зон сервер живёт как раньше", calls == [], str(calls[:2]))
+
+    print(f"\n{B}  · апстримы{N}")
+    conf = (
+        "[Interface]\nPrivateKey = k\nAddress = 10.40.0.126/24\n"
+        "Table = 42\n\n[Peer]\nPublicKey = p\n"
+        "AllowedIPs = 10.30.0.0/16, 10.40.0.0/24, 0.0.0.0/0\n"
+        "Endpoint = mgmt.example.com:13231\n"
+    )
+    check("подсети берём из конфига провайдера",
+          ups.parse_allowed(conf) == ["10.30.0.0/16", "10.40.0.0/24"])
+    prepared = ups.prepare_conf(conf)
+    # Иначе конфиг с 0.0.0.0/0 уведёт в чужой туннель весь трафик
+    # сервера — вместе с клиентами и нашим же SSH.
+    check("маршруты wg-quick выключены", "Table = off" in prepared)
+    check("чужая Table = 42 убрана", "Table = 42" not in prepared)
+    check("имя интерфейса влезает в ядро", len(ups.iface_of("tube-hosting")) <= 15)
+    check("кривое имя не принимается",
+          not ups.valid_name("../etc/passwd") and not ups.valid_name("имя"))
+    check("нормальное принимается", ups.valid_name("tube-host"))
+    # Приватный ключ провайдера наружу не отдаём ни при каких условиях.
+    safe = ups.sanitize({"name": "tube", "cidrs": ["10.30.0.0/16"], "conf": conf})
+    check("конфиг наружу не уходит", "conf" not in safe and "PrivateKey" not in str(safe))
+
+    print(f"\n{B}10. QR{N}")
     # segno отдаёт svg БАЙТАМИ: на текстовом буфере ручка падала 500-й,
     # и это выяснилось уже на живой панели.
     import io as _io

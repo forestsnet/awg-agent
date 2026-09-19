@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-from . import awg, config, proto, quota, render, shaper
+from . import awg, config, proto, quota, render, shaper, upstream, zones
 
 logger = logging.getLogger("state")
 
@@ -45,6 +45,10 @@ class Store:
     def __init__(self) -> None:
         self.server: dict[str, Any] = {}
         self.clients: list[dict[str, Any]] = []
+        # Бастион: зоны доступа и туннели до чужих сетей. Пустые списки
+        # — обычный VPN-сервер, который ведёт себя как раньше.
+        self.zones: list[dict[str, Any]] = []
+        self.upstreams: list[dict[str, Any]] = []
         self._lock = asyncio.Lock()
 
     # ── Загрузка ────────────────────────────────────────────────────
@@ -56,6 +60,8 @@ class Store:
                 data = json.load(fh)
             self.server = data.get("server") or {}
             self.clients = data.get("clients") or []
+            self.zones = data.get("zones") or []
+            self.upstreams = data.get("upstreams") or []
             logger.info("состояние загружено: клиентов %d", len(self.clients))
         elif os.path.exists(config.LEGACY_STATE_PATH):
             await self._import_legacy()
@@ -145,7 +151,12 @@ class Store:
     async def persist_state(self) -> None:
         """Только clients.json — конфиг интерфейса не трогаем."""
         payload = json.dumps(
-            {"server": self.server, "clients": self.clients},
+            {
+                "server": self.server,
+                "clients": self.clients,
+                "zones": self.zones,
+                "upstreams": self.upstreams,
+            },
             ensure_ascii=False,
             indent=1,
         )
@@ -173,6 +184,16 @@ class Store:
             await shaper.apply(self.clients)
         except Exception:  # noqa: BLE001
             logger.exception("шейпер не применился")
+        # Апстримы раньше зон: зона без поднятого туннеля — это закрытый
+        # доступ, а не открытый, так что порядок безопасен в любом случае.
+        try:
+            await upstream.apply(self.upstreams)
+        except Exception:  # noqa: BLE001
+            logger.exception("апстримы не применились")
+        try:
+            await zones.apply(self.clients, self.zones)
+        except Exception:  # noqa: BLE001
+            logger.exception("зоны не применились")
 
     # ── Резервная копия ─────────────────────────────────────────────
 
@@ -350,6 +371,134 @@ class Store:
                 client["enabled"] = True
                 client["disabled_reason"] = None
             client["updated_at"] = _now()
+            await self.apply()
+            return True
+
+    # ── Бастион: зоны и апстримы ────────────────────────────────────
+
+    def zone(self, zone_id: str | None) -> Optional[dict[str, Any]]:
+        return zones.zone_of({"zone_id": zone_id}, self.zones)
+
+    async def create_zone(
+        self, name: str, cidrs: list[str], *, upstream: str | None = None,
+        internet: bool = False,
+    ) -> dict[str, Any]:
+        async with self._lock:
+            zone = {
+                "id": str(uuid.uuid4()),
+                "name": name,
+                "cidrs": zones.normalize_cidrs(cidrs),
+                "upstream": upstream or None,
+                "internet": bool(internet),
+                "created_at": _now(),
+                "updated_at": _now(),
+            }
+            self.zones.append(zone)
+            await self.apply()
+            return zone
+
+    async def update_zone(self, zone_id: str, **fields: Any) -> Optional[dict[str, Any]]:
+        async with self._lock:
+            zone = zones.zone_of({"zone_id": zone_id}, self.zones)
+            if not zone:
+                return None
+            if "cidrs" in fields:
+                fields["cidrs"] = zones.normalize_cidrs(fields["cidrs"])
+            for key, value in fields.items():
+                if key in ("name", "cidrs", "upstream", "internet"):
+                    zone[key] = value
+            zone["updated_at"] = _now()
+            await self.apply()
+            return zone
+
+    async def delete_zone(self, zone_id: str) -> bool:
+        async with self._lock:
+            zone = zones.zone_of({"zone_id": zone_id}, self.zones)
+            if not zone:
+                return False
+            self.zones.remove(zone)
+            # Клиенты этой зоны остаются без доступа, а не со старым:
+            # удалённая зона не должна продолжать что-то открывать.
+            for client in self.clients:
+                if client.get("zone_id") == zone_id:
+                    client["zone_id"] = None
+                    client["updated_at"] = _now()
+            await self.apply()
+            return True
+
+    async def set_zone(self, key: str, zone_id: str | None) -> bool:
+        async with self._lock:
+            client = self.find(key)
+            if not client:
+                return False
+            if zone_id and not zones.zone_of({"zone_id": zone_id}, self.zones):
+                return False
+            client["zone_id"] = zone_id or None
+            client["updated_at"] = _now()
+            await self.apply()
+            return True
+
+    async def add_upstream(
+        self, name: str, conf: str, *, title: str | None = None,
+        cidrs: list[str] | None = None,
+    ) -> Optional[dict[str, Any]]:
+        """Сохранить конфиг провайдера и поднять его.
+
+        Подсети берём из самого конфига, если оператор не указал свои:
+        что провайдер разрешил, то и доступно.
+        """
+        if not upstream.valid_name(name):
+            return None
+        async with self._lock:
+            os.makedirs(upstream.UPSTREAM_DIR, exist_ok=True)
+            path = upstream.conf_path(name)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(conf)
+            os.chmod(path, 0o600)
+            item = {
+                "name": name,
+                "title": title or name,
+                "cidrs": zones.normalize_cidrs(cidrs or upstream.parse_allowed(conf)),
+                "enabled": True,
+                "created_at": _now(),
+            }
+            self.upstreams = [u for u in self.upstreams if u.get("name") != name]
+            self.upstreams.append(item)
+            await self.apply()
+            return item
+
+    async def update_upstream(self, name: str, **fields: Any) -> Optional[dict[str, Any]]:
+        async with self._lock:
+            item = next((u for u in self.upstreams if u.get("name") == name), None)
+            if not item:
+                return None
+            if "cidrs" in fields:
+                fields["cidrs"] = zones.normalize_cidrs(fields["cidrs"])
+            for key, value in fields.items():
+                if key in ("title", "cidrs", "enabled"):
+                    item[key] = value
+            await self.apply()
+            return item
+
+    async def delete_upstream(self, name: str) -> bool:
+        async with self._lock:
+            item = next((u for u in self.upstreams if u.get("name") == name), None)
+            if not item:
+                return False
+            await upstream.down(name)
+            self.upstreams.remove(item)
+            for path in (upstream.conf_path(name),
+                         os.path.join(upstream.UPSTREAM_DIR,
+                                      f"{upstream.iface_of(name)}.conf")):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            # Зоны, которые ходили через него, остаются, но без туннеля:
+            # правила доступа честно перестанут пускать.
+            for zone in self.zones:
+                if zone.get("upstream") == name:
+                    zone["upstream"] = None
             await self.apply()
             return True
 

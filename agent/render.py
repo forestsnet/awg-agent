@@ -209,7 +209,11 @@ def _client_addresses(client: dict[str, Any]) -> str:
     return ", ".join(addrs)
 
 
-def client_conf(server: dict[str, Any], client: dict[str, Any]) -> str:
+def client_conf(
+    server: dict[str, Any],
+    client: dict[str, Any],
+    zone: dict[str, Any] | None = None,
+) -> str:
     """Конфиг для устройства.
 
     Параметры обфускации обязаны совпадать с серверными — кроме I1..I5:
@@ -236,8 +240,13 @@ def client_conf(server: dict[str, Any], client: dict[str, Any]) -> str:
     ]
     if client.get("preshared_key"):
         lines.append(f"PresharedKey = {client['preshared_key']}")
+    # У техника с зоной в туннель уходят только её подсети: гонять туда
+    # весь интернет незачем — сервер его всё равно не пропустит, а
+    # человек увидит «VPN включён, интернета нет».
+    from . import zones as _zones
+
     lines += [
-        f"AllowedIPs = {config.WG_ALLOWED_IPS}",
+        f"AllowedIPs = {_zones.client_allowed_ips(zone, config.WG_ALLOWED_IPS)}",
         f"Endpoint = {host}:{config.WG_CONFIG_PORT}",
         f"PersistentKeepalive = {config.WG_PERSISTENT_KEEPALIVE}",
     ]

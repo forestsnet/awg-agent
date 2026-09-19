@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import (REPO_URL, __build__, __version__, auth, awg, config, net,
-               quota, render, shaper)
+               quota, render, shaper, upstream, zones)
 from .state import store
 
 logging.basicConfig(
@@ -63,6 +63,43 @@ class ExpiresIn(BaseModel):
 class RateIn(BaseModel):
     # Бит в секунду. 0 — скорость не ограничивать.
     bps: int = Field(default=0, ge=0)
+
+
+class ZoneIn(BaseModel):
+    """Зона доступа: имя, подсети и через что в них ходить."""
+
+    name: str = Field(default="", max_length=120)
+    cidrs: list[str] = Field(default_factory=list)
+    upstream: Optional[str] = None
+    # Выпускать ли такого клиента ещё и в интернет. По умолчанию нет:
+    # техник заходит за конкретными адресами, а не сёрфить.
+    internet: bool = False
+
+
+class ZonePatch(BaseModel):
+    name: Optional[str] = None
+    cidrs: Optional[list[str]] = None
+    upstream: Optional[str] = None
+    internet: Optional[bool] = None
+
+
+class ClientZoneIn(BaseModel):
+    zoneId: Optional[str] = None
+
+
+class UpstreamIn(BaseModel):
+    """Конфиг провайдера как есть — его агент поднимет сам."""
+
+    name: str = Field(default="", max_length=12)
+    conf: str = Field(default="", max_length=20000)
+    title: Optional[str] = None
+    cidrs: Optional[list[str]] = None
+
+
+class UpstreamPatch(BaseModel):
+    title: Optional[str] = None
+    cidrs: Optional[list[str]] = None
+    enabled: Optional[bool] = None
 
 
 class NameIn(BaseModel):
@@ -191,6 +228,7 @@ def _out(client: dict[str, Any], stats: dict[str, Any]) -> dict[str, Any]:
         "expiresAt": client.get("expires_at"),
         "disabledReason": client.get("disabled_reason"),
         "rateBps": int(client.get("rate_bps") or 0),
+        "zoneId": client.get("zone_id"),
     }
 
 
@@ -306,6 +344,7 @@ async def client_usage(key: str, days: int = 30) -> dict[str, Any]:
         "quotaResetAt": _quota_reset_at(client),
         "expiresAt": client.get("expires_at"),
         "rateBps": int(client.get("rate_bps") or 0),
+        "zoneId": client.get("zone_id"),
         "enabled": bool(client.get("enabled", True)),
         "disabledReason": client.get("disabled_reason"),
     }
@@ -353,7 +392,7 @@ async def client_config(key: str) -> PlainTextResponse:
     client = store.find(key)
     if not client:
         raise HTTPException(status_code=404, detail="Клиент не найден")
-    text = render.client_conf(store.server, client)
+    text = render.client_conf(store.server, client, store.zone(client.get("zone_id")))
     filename = "".join(ch for ch in client["name"] if ch.isalnum() or ch in "-_") or "client"
     return PlainTextResponse(
         text,
@@ -378,10 +417,187 @@ async def client_qr(key: str) -> Response:
     # на пару версий выше: модулей больше, каждый мельче, телефон его не
     # ловит. Рамка в 4 модуля — требование стандарта, с двумя сканеры
     # цепляют фон карточки.
-    segno.make(render.client_conf(store.server, client), error="l").save(
+    segno.make(render.client_conf(store.server, client, store.zone(client.get("zone_id"))), error="l").save(
         buf, kind="svg", scale=8, border=4, dark="#0f172a", light="#ffffff"
     )
     return Response(buf.getvalue(), media_type="image/svg+xml")
+
+
+# ── Бастион: зоны доступа и апстримы ────────────────────────────────
+#
+# Зона отвечает на вопрос «кому куда можно», апстрим — «как мы туда
+# дотягиваемся». Разделено намеренно: один туннель провайдера обычно
+# обслуживает несколько зон (IPMI отдельно, management отдельно), а
+# зона вполне может жить и без туннеля — на сетях, которые сервер видит
+# и так.
+
+
+@app.get("/api/zones", dependencies=[Depends(_authed)])
+async def zones_list() -> list[dict[str, Any]]:
+    out = []
+    for zone in store.zones:
+        item = dict(zone)
+        item["clients"] = [
+            c["id"] for c in store.clients if c.get("zone_id") == zone["id"]
+        ]
+        out.append(item)
+    return out
+
+
+@app.post("/api/zones", dependencies=[Depends(_authed)])
+async def zone_create(payload: ZoneIn) -> dict[str, Any]:
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Нужно имя зоны")
+    bad = [c for c in payload.cidrs if not zones.valid_cidr(c)]
+    if bad:
+        raise HTTPException(status_code=400, detail=f"Не подсеть: {bad[0]}")
+    return await store.create_zone(
+        name, payload.cidrs, upstream=payload.upstream, internet=payload.internet
+    )
+
+
+@app.put("/api/zones/{zone_id}", dependencies=[Depends(_authed)])
+async def zone_update(zone_id: str, payload: ZonePatch) -> dict[str, Any]:
+    fields = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if "cidrs" in fields:
+        bad = [c for c in fields["cidrs"] if not zones.valid_cidr(c)]
+        if bad:
+            raise HTTPException(status_code=400, detail=f"Не подсеть: {bad[0]}")
+    zone = await store.update_zone(zone_id, **fields)
+    if not zone:
+        raise HTTPException(status_code=404, detail="Зона не найдена")
+    return zone
+
+
+@app.delete("/api/zones/{zone_id}", dependencies=[Depends(_authed)])
+async def zone_delete(zone_id: str) -> dict[str, Any]:
+    if not await store.delete_zone(zone_id):
+        raise HTTPException(status_code=404, detail="Зона не найдена")
+    return {"success": True}
+
+
+@app.put("/api/wireguard/client/{key}/zone", dependencies=[Depends(_authed)])
+async def client_set_zone(key: str, payload: ClientZoneIn) -> dict[str, Any]:
+    if not await store.set_zone(key, payload.zoneId):
+        raise HTTPException(status_code=404, detail="Клиент или зона не найдены")
+    logger.info("зона клиента %s: %s", key, payload.zoneId or "снята")
+    return {"success": True}
+
+
+@app.get("/api/upstreams", dependencies=[Depends(_authed)])
+async def upstreams_list() -> list[dict[str, Any]]:
+    out = []
+    for item in store.upstreams:
+        entry = upstream.sanitize(item)
+        entry["status"] = await upstream.status(item["name"])
+        out.append(entry)
+    return out
+
+
+@app.post("/api/upstreams", dependencies=[Depends(_authed)])
+async def upstream_add(payload: UpstreamIn) -> dict[str, Any]:
+    name = (payload.name or "").strip()
+    if not upstream.valid_name(name):
+        raise HTTPException(
+            status_code=400,
+            detail="Имя: латиница, цифры, дефис; до 12 символов",
+        )
+    if "[Interface]" not in payload.conf or "[Peer]" not in payload.conf:
+        raise HTTPException(status_code=400, detail="Это не конфиг WireGuard")
+    item = await store.add_upstream(
+        name, payload.conf, title=payload.title, cidrs=payload.cidrs
+    )
+    if not item:
+        raise HTTPException(status_code=400, detail="Апстрим не сохранился")
+    result = upstream.sanitize(item)
+    result["status"] = await upstream.status(name)
+    return result
+
+
+@app.put("/api/upstreams/{name}", dependencies=[Depends(_authed)])
+async def upstream_update(name: str, payload: UpstreamPatch) -> dict[str, Any]:
+    fields = {k: v for k, v in payload.model_dump().items() if v is not None}
+    item = await store.update_upstream(name, **fields)
+    if not item:
+        raise HTTPException(status_code=404, detail="Апстрим не найден")
+    result = upstream.sanitize(item)
+    result["status"] = await upstream.status(name)
+    return result
+
+
+@app.delete("/api/upstreams/{name}", dependencies=[Depends(_authed)])
+async def upstream_delete(name: str) -> dict[str, Any]:
+    if not await store.delete_upstream(name):
+        raise HTTPException(status_code=404, detail="Апстрим не найден")
+    return {"success": True}
+
+
+@app.get("/api/topology", dependencies=[Depends(_authed)])
+async def topology() -> dict[str, Any]:
+    """Карта сети одним запросом: кто, через что и куда.
+
+    Панель рисует по ней схему, поэтому связи отдаём явными рёбрами —
+    иначе каждый клиент собирал бы их сам и по-своему.
+    """
+    stats = await awg.peer_stats()
+    nodes: list[dict[str, Any]] = [{
+        "id": "server",
+        "kind": "server",
+        "label": config.WG_INTERFACE,
+        "vpn": config.VPN_PROTO,
+        "endpoint": f"{config.WG_HOST}:{config.WG_CONFIG_PORT}" if config.WG_HOST else None,
+        "subnet": str(render.subnet()),
+    }]
+    edges: list[dict[str, Any]] = []
+
+    for item in store.upstreams:
+        state = await upstream.status(item["name"])
+        nodes.append({
+            "id": f"upstream:{item['name']}",
+            "kind": "upstream",
+            "label": item.get("title") or item["name"],
+            "cidrs": item.get("cidrs") or [],
+            "up": state.get("up"),
+            "handshakeAge": state.get("handshake_age"),
+        })
+        edges.append({"from": "server", "to": f"upstream:{item['name']}"})
+
+    for zone in store.zones:
+        nodes.append({
+            "id": f"zone:{zone['id']}",
+            "kind": "zone",
+            "label": zone.get("name"),
+            "cidrs": zone.get("cidrs") or [],
+            "internet": bool(zone.get("internet")),
+        })
+        if zone.get("upstream"):
+            edges.append({
+                "from": f"zone:{zone['id']}",
+                "to": f"upstream:{zone['upstream']}",
+            })
+        else:
+            # Зона без туннеля ходит через сам сервер — по его маршрутам.
+            edges.append({"from": f"zone:{zone['id']}", "to": "server"})
+
+    for client in store.clients:
+        live = stats.get(client["public_key"], {})
+        nodes.append({
+            "id": f"client:{client['id']}",
+            "kind": "client",
+            "label": client.get("name"),
+            "address": client.get("address"),
+            "enabled": bool(client.get("enabled", True)),
+            "online": bool(live.get("latest_handshake_at")),
+            "lastHandshakeAt": _iso(live.get("latest_handshake_at")),
+        })
+        zone_id = client.get("zone_id")
+        edges.append({
+            "from": f"client:{client['id']}",
+            "to": f"zone:{zone_id}" if zone_id else "server",
+        })
+
+    return {"nodes": nodes, "edges": edges}
 
 
 # ── Резервная копия ─────────────────────────────────────────────────
