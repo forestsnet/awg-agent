@@ -23,6 +23,14 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     print(f"  {G}✓{N} {name}" if ok else f"  {R}✗{N} {name}" + (f" — {detail}" if detail else ""))
 
 
+def _subnet6_for(v4: str) -> str:
+    """Префикс v6 для другой v4-подсети — без правки глобального конфига."""
+    import ipaddress
+
+    a, b, c, _ = ipaddress.ip_network(v4).network_address.packed
+    return f"fd{a:02x}:{b:02x}{c:02x}::/64"
+
+
 def main() -> None:
     os.environ.setdefault("PASSWORD_HASH", "x")
     from agent import auth, proto, render
@@ -303,6 +311,13 @@ def main() -> None:
           shaper.class_id("10.8.0.5") != shaper.class_id("10.8.0.6"))
     check("мусорный адрес не ломает", shaper.class_id("не адрес") == 0)
 
+    # tc читает минорную часть classid как шестнадцатеричное число. Мы
+    # подставляли десятичное: 65535 не помещался в 16 бит, класс по
+    # умолчанию не создавался, и каждая перестройка писала в лог
+    # «invalid class ID».
+    check("номер класса уходит в tc шестнадцатеричным",
+          shaper.hx(shaper.DEFAULT_CLASSID) == "ffff" and shaper.hx(32) == "20")
+
     # Всплеск меньше пары десятков килобайт режет мелкие пачки пакетов:
     # TCP не разгоняется, и человек видит «медленно» на выданной скорости.
     check("всплеск не меньше 32 КБ", shaper.burst_bytes(1_000_000) >= 32 * 1024)
@@ -321,7 +336,60 @@ def main() -> None:
           and "2026-01-07" in client["history"])
     cfg2.HISTORY_DAYS = old_days
 
-    print(f"\n{B}8. QR{N}")
+    print(f"\n{B}8. IPv6 в туннеле{N}")
+    # Живая история: у клиента в AllowedIPs стоит ::/0, а v6-адреса у
+    # туннеля нет. iOS поднимает маршрут для v6, только если адрес есть,
+    # поэтому весь IPv6 шёл мимо VPN — напрямую через оператора. Со
+    # стороны это выглядело как «ограничение скорости не работает»:
+    # speedtest уезжал по v6 и показывал скорость сотовой сети.
+    from agent import config as cfg6, net as net6
+    from agent import render as rnd6
+
+    os.environ["WG_SUBNET"] = "10.8.0.0/16"
+    check("подсеть v6 считается из v4",
+          str(rnd6.subnet6()) == "fd0a:800::/64", str(rnd6.subnet6()))
+    check("у экземпляров разные префиксы", _subnet6_for("10.20.0.0/16") != str(rnd6.subnet6()))
+    check("сервер занимает ::1", rnd6.server_address6() == "fd0a:800::1")
+    check("адрес клиента — зеркало v4",
+          rnd6.address6_for("10.8.0.4") == "fd0a:800::4")
+    check("чужой адрес не получает v6", rnd6.address6_for("192.168.1.5") == "")
+
+    # Параметры обфускации берём настоящие: в awg-режиме рендер без них
+    # не собирается, а режим по умолчанию — именно awg.
+    srv6 = {"private_key": "k", "public_key": "p", "params": proto.generate(3, random_trailers=True, disable_cookies=False),
+            "i1": proto.signature_packet()}
+    cli6 = {"name": "c", "public_key": "pp", "private_key": "x",
+            "address": "10.8.0.4", "enabled": True}
+    conf6 = rnd6.client_conf(srv6, cli6)
+    check("v6 попал в конфиг клиента", "fd0a:800::4/128" in conf6, conf6.split("\n")[2])
+    server_conf6 = rnd6.server_conf(srv6, [cli6])
+    check("и в адрес сервера", "fd0a:800::1/64" in server_conf6)
+    check("и в AllowedIPs пира", "fd0a:800::4/128" in server_conf6)
+    check("форвардинг v6 поднимается", "ip6tables -A FORWARD -i" in server_conf6)
+    # ip6tables может не быть вовсе, а ненулевой код в PostUp уронит
+    # поднятие интерфейса целиком.
+    check("v6-правила не роняют интерфейс", "|| true" in server_conf6)
+
+    # NAT66 вешаем только при живом глобальном v6 у хоста: иначе правило
+    # бессмысленно, а на части ядер ещё и шумит.
+    real_v6 = net6.has_global_ipv6
+    net6.has_global_ipv6 = lambda *a, **kw: True
+    check("с глобальным v6 включается NAT66",
+          "ip6tables -t nat -A POSTROUTING" in rnd6.server_conf(srv6, [cli6]))
+    net6.has_global_ipv6 = lambda *a, **kw: False
+    check("без него NAT66 не ставим",
+          "ip6tables -t nat" not in rnd6.server_conf(srv6, [cli6]))
+    net6.has_global_ipv6 = real_v6
+
+    # Рубильник: если v6 в туннеле где-то мешает, его выключают одной
+    # переменной — и конфиг снова строго v4.
+    cfg6.WG_IPV6 = False
+    check("рубильник выключает v6 целиком",
+          "fd0a" not in rnd6.client_conf(srv6, cli6)
+          and "ip6tables" not in rnd6.server_conf(srv6, [cli6]))
+    cfg6.WG_IPV6 = True
+
+    print(f"\n{B}9. QR{N}")
     # segno отдаёт svg БАЙТАМИ: на текстовом буфере ручка падала 500-й,
     # и это выяснилось уже на живой панели.
     import io as _io

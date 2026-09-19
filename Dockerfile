@@ -14,7 +14,11 @@ RUN python3 -m venv /opt/venv \
 COPY agent/ ./agent/
 COPY web/ ./web/
 
-ENV PATH="/opt/venv/bin:$PATH" \
+# Хэш коммита приезжает из CI: в панели видно, какая именно сборка
+# крутится на сервере. Без него «обновил» и «обновилось» не различить.
+ARG BUILD_SHA=dev
+ENV AGENT_BUILD=${BUILD_SHA} \
+    PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     WG_PATH=/etc/amnezia/amneziawg

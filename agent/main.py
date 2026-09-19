@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, auth, awg, config, net, quota, render
+from . import REPO_URL, __build__, __version__, auth, awg, config, net, quota, render
 from .state import store
 
 logging.basicConfig(
@@ -429,6 +429,8 @@ async def health() -> dict[str, Any]:
     return {
         "ok": True,
         "agent": __version__,
+        "build": __build__,
+        "repo": REPO_URL,
         "vpn": config.VPN_PROTO,
         "interface": config.WG_INTERFACE,
         "endpoint": f"{config.WG_HOST}:{config.WG_CONFIG_PORT}" if config.WG_HOST else None,
@@ -445,7 +447,12 @@ async def health() -> dict[str, Any]:
 @app.get("/api/release")
 async def release() -> dict[str, Any]:
     """Совместимость: старый фронт панели спрашивал версию этой ручкой."""
-    return {"version": __version__, "agent": "forestsnet/awg-agent"}
+    return {
+        "version": __version__,
+        "build": __build__,
+        "repo": REPO_URL,
+        "agent": "forestsnet/awg-agent",
+    }
 
 
 @app.exception_handler(HTTPException)

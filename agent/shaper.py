@@ -21,7 +21,7 @@ import ipaddress
 import logging
 from typing import Any
 
-from . import config
+from . import config, render
 
 logger = logging.getLogger("shaper")
 
@@ -30,6 +30,18 @@ logger = logging.getLogger("shaper")
 # такой адрес в подсети не выдаётся (это её широковещательный). С
 # «красивым» 9999 клиент 10.8.39.15 попал бы в чужой класс.
 DEFAULT_CLASSID = 0xFFFF
+
+
+def hx(value: int) -> str:
+    """Номер класса для tc — строго шестнадцатеричный.
+
+    tc читает минорную часть classid как hex, без всяких 0x. Мы же
+    подставляли десятичное число: пока в нём одни цифры, оно молча
+    означало что-то другое (20 → 0x20), а 65535 не помещалось в 16 бит
+    вовсе — класс по умолчанию не создавался и каждая перестройка
+    писала в лог «invalid class ID».
+    """
+    return format(int(value), "x")
 
 
 async def _run(*args: str, quiet: bool = False) -> bool:
@@ -91,12 +103,17 @@ async def apply(clients: list[dict[str, Any]]) -> None:
     # quantum задаём руками: без него htb ругается на класс по умолчанию
     # («quantum is big») и считает его сам от гигабитной скорости.
     ok = await _run("tc", "qdisc", "add", "dev", iface, "root", "handle", "1:",
-                    "htb", "default", str(DEFAULT_CLASSID))
+                    "htb", "default", hx(DEFAULT_CLASSID))
     if not ok:
         logger.warning("шейпер не включился: интерфейс %s не принял qdisc", iface)
         return
-    await _run("tc", "class", "add", "dev", iface, "parent", "1:",
-               "classid", f"1:{DEFAULT_CLASSID}", "htb", "rate", "10gbit", "quantum", "200000")
+    ok = await _run("tc", "class", "add", "dev", iface, "parent", "1:",
+                    "classid", f"1:{hx(DEFAULT_CLASSID)}", "htb",
+                    "rate", "10gbit", "quantum", "200000")
+    if not ok:
+        # Без класса по умолчанию htb отправляет чужие пакеты напрямую —
+        # безлимитные клиенты работают, но об этом стоит знать.
+        logger.warning("шейпер: класс по умолчанию не создан")
     await _run("tc", "qdisc", "add", "dev", iface, "handle", "ffff:", "ingress")
 
     for client in limited:
@@ -109,16 +126,32 @@ async def apply(clients: list[dict[str, Any]]) -> None:
 
         # Скачивание: свой класс и честная очередь внутри него, чтобы
         # одна тяжёлая закачка не затыкала остальные соединения клиента.
-        await _run("tc", "class", "add", "dev", iface, "parent", "1:", "classid", f"1:{cid}",
+        await _run("tc", "class", "add", "dev", iface, "parent", "1:",
+                   "classid", f"1:{hx(cid)}",
                    "htb", "rate", f"{rate}bit", "ceil", f"{rate}bit", "burst", f"{burst}b")
-        await _run("tc", "qdisc", "add", "dev", iface, "parent", f"1:{cid}",
-                   "handle", f"{cid}:", "sfq", "perturb", "10")
+        await _run("tc", "qdisc", "add", "dev", iface, "parent", f"1:{hx(cid)}",
+                   "handle", f"{hx(cid)}:", "sfq", "perturb", "10")
         await _run("tc", "filter", "add", "dev", iface, "parent", "1:", "protocol", "ip",
-                   "prio", "1", "u32", "match", "ip", "dst", f"{addr}/32", "flowid", f"1:{cid}")
+                   "prio", "1", "u32", "match", "ip", "dst", f"{addr}/32",
+                   "flowid", f"1:{hx(cid)}")
 
         # Отдача: очередей на входе нет, поэтому просто режем лишнее.
         await _run("tc", "filter", "add", "dev", iface, "parent", "ffff:", "protocol", "ip",
                    "prio", "1", "u32", "match", "ip", "src", f"{addr}/32",
+                   "police", "rate", f"{rate}bit", "burst", f"{burst}b", "drop", "flowid", ":1")
+
+        # То же самое для IPv6. Фильтр по `protocol ip` видит только v4,
+        # и без этой пары лимит обходится простым переключением на v6 —
+        # причём молча: клиент подключён, счётчики тикают, скорость
+        # полная.
+        addr6 = render.address6_for(client["address"])
+        if not addr6:
+            continue
+        await _run("tc", "filter", "add", "dev", iface, "parent", "1:", "protocol", "ipv6",
+                   "prio", "2", "u32", "match", "ip6", "dst", f"{addr6}/128",
+                   "flowid", f"1:{hx(cid)}")
+        await _run("tc", "filter", "add", "dev", iface, "parent", "ffff:", "protocol", "ipv6",
+                   "prio", "2", "u32", "match", "ip6", "src", f"{addr6}/128",
                    "police", "rate", f"{rate}bit", "burst", f"{burst}b", "drop", "flowid", ":1")
 
     logger.info("шейпер: правил на %d клиент(ов)", len(limited))

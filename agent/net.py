@@ -68,6 +68,41 @@ def egress_device() -> str:
     return _cached
 
 
+IF_INET6 = "/proc/net/if_inet6"
+
+
+def has_global_ipv6(path: str = IF_INET6) -> bool:
+    """Есть ли у машины глобальный IPv6.
+
+    От ответа зависит, что делать с v6-трафиком клиентов: выпускать его
+    наружу через NAT66 или оставить умирать в туннеле. Смотрим /proc, а
+    не `ip -6 addr`: это чтение файла, и работает без iproute2.
+
+    Формат строки: адрес, индекс, длина префикса, scope, флаги, имя.
+    Нас интересует scope 00 (global) на любом интерфейсе, кроме
+    петлевого: адрес на eth0 или на бридже — одинаково рабочий.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            rows = fh.read().splitlines()
+    except OSError:
+        return False
+    for row in rows:
+        parts = row.split()
+        if len(parts) < 6:
+            continue
+        addr, scope, name = parts[0], parts[3], parts[5]
+        if name == "lo" or scope != "00":
+            continue
+        # fe80::/10 — канальные, fc00::/7 — приватные ULA: наружу с ними
+        # не выйти, даже если ядро назвало их глобальными.
+        head = addr[:4].lower()
+        if head.startswith("fe8") or head.startswith("fc") or head.startswith("fd"):
+            continue
+        return True
+    return False
+
+
 def reset_cache() -> None:
     """Сбросить запомненный интерфейс (нужно тестам)."""
     global _cached

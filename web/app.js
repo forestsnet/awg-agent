@@ -226,6 +226,11 @@ function renderHealth(h) {
 
   $('iface-state').classList.toggle('down', !h.up);
   setText($('iface-text'), h.up ? 'активен' : 'не запущен');
+
+  // Версия и хэш сборки в подвале. «dev» — собрано руками, не из CI.
+  const build = h.build && h.build !== 'dev' ? ` · сборка ${h.build}` : '';
+  setText($('foot-version'), `forestsnet agent ${h.agent || ''}${build}`.trim());
+  if (h.repo) $('foot-repo').href = h.repo;
 }
 
 function renderStats() {
