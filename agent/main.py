@@ -23,7 +23,8 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import REPO_URL, __build__, __version__, auth, awg, config, net, quota, render
+from . import (REPO_URL, __build__, __version__, auth, awg, config, net,
+               quota, render, shaper)
 from .state import store
 
 logging.basicConfig(
@@ -95,6 +96,15 @@ async def _startup() -> None:
             # Не падаем: API должен отвечать даже когда интерфейс не
             # встал — иначе про причину узнать неоткуда.
             logger.error("интерфейс не поднялся: %s", exc)
+    # Правила скорости живут в ядре и исчезают вместе с интерфейсом.
+    # Перестраивались они только при изменении клиента, поэтому после
+    # перезапуска (обновление, ребут VPS) все лимиты тихо переставали
+    # действовать до первой правки — а выглядело это как «ограничение
+    # не работает».
+    try:
+        await shaper.apply(store.clients)
+    except Exception:  # noqa: BLE001
+        logger.exception("шейпер не применился на старте")
     asyncio.create_task(_quota_loop())
 
 
