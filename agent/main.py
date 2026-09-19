@@ -23,8 +23,8 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import (REPO_URL, __build__, __version__, auth, awg, config, net,
-               quota, render, shaper, upstream, zones)
+from . import (REPO_URL, __build__, __version__, auth, awg, config,
+               journal, net, quota, render, shaper, upstream, zones)
 from .state import store
 
 logging.basicConfig(
@@ -531,6 +531,22 @@ async def upstream_delete(name: str) -> dict[str, Any]:
     if not await store.delete_upstream(name):
         raise HTTPException(status_code=404, detail="Апстрим не найден")
     return {"success": True}
+
+
+@app.get("/api/journal", dependencies=[Depends(_authed)])
+async def journal_list(
+    limit: int = 200, client: Optional[str] = None, kind: Optional[str] = None
+) -> list[dict[str, Any]]:
+    """Кто, когда и откуда заходил.
+
+    Рукопожатие говорит только «сейчас он тут». Для служебного доступа
+    важнее история: когда заходил, сколько пробыл и с какого адреса —
+    разбор инцидента начинается именно с этого.
+    """
+    return journal.select(
+        store.events, limit=max(1, min(limit, journal.LIMIT)),
+        client_id=client, kind=kind,
+    )
 
 
 @app.get("/api/topology", dependencies=[Depends(_authed)])

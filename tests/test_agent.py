@@ -498,7 +498,68 @@ def main() -> None:
     safe = ups.sanitize({"name": "tube", "cidrs": ["10.30.0.0/16"], "conf": conf})
     check("конфиг наружу не уходит", "conf" not in safe and "PrivateKey" not in str(safe))
 
-    print(f"\n{B}10. QR{N}")
+    print(f"\n{B}10. Журнал подключений{N}")
+    # «Последнее рукопожатие» отвечает только на «сейчас он тут?».
+    # Для служебного доступа нужна история: когда заходил, сколько
+    # пробыл и с какого адреса — разбор инцидента начинается с этого.
+    from datetime import datetime as _dt, timedelta as _td
+
+    from agent import journal as jr
+
+    events: list = []
+    tech = {"id": "c1", "name": "Сергей", "address": "10.8.0.2",
+            "zone_id": "z1", "last_seen_rx": 0, "last_seen_tx": 0}
+    t0 = _dt(2026, 9, 19, 10, 0, 0)
+
+    jr.observe(events, tech, {"latest_handshake_at": t0, "endpoint": "5.5.5.5:1234",
+                              "transfer_rx": 0, "transfer_tx": 0}, t0)
+    check("подключение записано", events[-1]["kind"] == "connected", str(events[-1:]))
+    check("видно, откуда пришёл", events[-1]["endpoint"] == "5.5.5.5:1234")
+
+    tech["last_seen_rx"], tech["last_seen_tx"] = 1_000_000, 2_000_000
+    t1 = t0 + _td(minutes=20)
+    jr.observe(events, tech, {"latest_handshake_at": t1, "endpoint": "5.5.5.5:1234",
+                              "transfer_rx": 1_000_000, "transfer_tx": 2_000_000}, t1)
+    check("живая сессия не плодит записей", len(events) == 1, str(len(events)))
+
+    # Тишина дольше IDLE_GAP — человек ушёл.
+    t2 = t1 + _td(minutes=10)
+    jr.observe(events, tech, {}, t2)
+    last = events[-1]
+    check("отключение записано", last["kind"] == "disconnected")
+    # Длительность считаем до последнего рукопожатия, иначе к каждой
+    # сессии приклеивались бы минуты ожидания.
+    check("длительность без хвоста ожидания", last["seconds"] == 20 * 60, str(last))
+    check("трафик сессии посчитан", last["rx"] == 1_000_000 and last["tx"] == 2_000_000)
+    check("сессия закрыта", "session" not in tech)
+
+    # Переезд в другую сеть — новая сессия, а не продолжение старой.
+    jr.observe(events, tech, {"latest_handshake_at": t2, "endpoint": "5.5.5.5:1234",
+                              "transfer_rx": 1_000_000, "transfer_tx": 2_000_000}, t2)
+    t3 = t2 + _td(minutes=5)
+    jr.observe(events, tech, {"latest_handshake_at": t3, "endpoint": "7.7.7.7:999",
+                              "transfer_rx": 1_100_000, "transfer_tx": 2_100_000}, t3)
+    kinds = [e["kind"] for e in events[-3:]]
+    check("смена сети закрывает сессию и открывает новую",
+          kinds == ["connected", "disconnected", "connected"], str(kinds))
+    check("причина указана", events[-2].get("reason") == "сменил сеть")
+
+    jr.record(events, jr.KIND_ZONE, tech, zone="IPMI")
+    check("смена зоны попадает в журнал", events[-1]["kind"] == "zone")
+    check("выборка свежим вперёд",
+          jr.select(events, limit=2)[0]["kind"] == "zone")
+    check("можно отобрать одного человека",
+          len(jr.select(events, client_id="c1")) == len(events))
+    check("и чужого не подмешать", jr.select(events, client_id="нет") == [])
+
+    # Журнал живёт в файле состояния, который читается целиком на
+    # каждом старте: за год он превратил бы его в мегабайты.
+    many: list = []
+    for i in range(jr.LIMIT + 50):
+        jr.record(many, jr.KIND_CONNECTED, tech, endpoint=f"1.1.1.{i % 250}")
+    check("журнал подрезан", len(many) == jr.LIMIT, str(len(many)))
+
+    print(f"\n{B}11. QR{N}")
     # segno отдаёт svg БАЙТАМИ: на текстовом буфере ручка падала 500-й,
     # и это выяснилось уже на живой панели.
     import io as _io

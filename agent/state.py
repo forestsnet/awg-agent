@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-from . import awg, config, proto, quota, render, shaper, upstream, zones
+from . import awg, config, journal, proto, quota, render, shaper, upstream, zones
 
 logger = logging.getLogger("state")
 
@@ -49,6 +49,10 @@ class Store:
         # — обычный VPN-сервер, который ведёт себя как раньше.
         self.zones: list[dict[str, Any]] = []
         self.upstreams: list[dict[str, Any]] = []
+        # Журнал подключений: кто, когда и откуда. «Последнее
+        # рукопожатие» отвечает только на «сейчас он тут?», а для
+        # служебного доступа нужна история.
+        self.events: list[dict[str, Any]] = []
         self._lock = asyncio.Lock()
 
     # ── Загрузка ────────────────────────────────────────────────────
@@ -62,6 +66,7 @@ class Store:
             self.clients = data.get("clients") or []
             self.zones = data.get("zones") or []
             self.upstreams = data.get("upstreams") or []
+            self.events = data.get("events") or []
             logger.info("состояние загружено: клиентов %d", len(self.clients))
         elif os.path.exists(config.LEGACY_STATE_PATH):
             await self._import_legacy()
@@ -156,6 +161,7 @@ class Store:
                 "clients": self.clients,
                 "zones": self.zones,
                 "upstreams": self.upstreams,
+                "events": self.events,
             },
             ensure_ascii=False,
             indent=1,
@@ -311,6 +317,7 @@ class Store:
                 "last_seen_tx": 0,
             }
             self.clients.append(client)
+            journal.record(self.events, journal.KIND_CREATED, client)
             await self.apply()
             return client
 
@@ -320,6 +327,7 @@ class Store:
             if not client:
                 return False
             self.clients.remove(client)
+            journal.record(self.events, journal.KIND_DELETED, client)
             await self.apply()
             return True
 
@@ -329,6 +337,12 @@ class Store:
             if not client:
                 return False
             was_blocked = client.get("disabled_reason") in (quota.QUOTA, quota.EXPIRED)
+            if client.get("enabled", True) != enabled:
+                journal.record(
+                    self.events,
+                    journal.KIND_ENABLED if enabled else journal.KIND_DISABLED,
+                    client,
+                )
             client["enabled"] = enabled
             client["disabled_reason"] = None if enabled else quota.MANUAL
             # Включили того, кого выключил лимит, — начинаем новый период.
@@ -435,6 +449,11 @@ class Store:
                 return False
             client["zone_id"] = zone_id or None
             client["updated_at"] = _now()
+            # Смена зоны — это смена того, куда человек может ходить.
+            # В журнале она должна быть видна рядом с его заходами.
+            zone = zones.zone_of(client, self.zones)
+            journal.record(self.events, journal.KIND_ZONE, client,
+                           zone=zone.get("name") if zone else None)
             await self.apply()
             return True
 
@@ -561,6 +580,11 @@ class Store:
                         _prune_history(client)
                     client["last_seen_rx"] = rx
                     client["last_seen_tx"] = tx
+
+                # Журнал считаем по тем же живым счётчикам: отдельный
+                # опрос ради него был бы лишним запуском бинарника раз
+                # в десять секунд.
+                journal.observe(self.events, client, live, now)
 
                 was_enabled = client.get("enabled", True)
                 events = quota.apply(client, now)
