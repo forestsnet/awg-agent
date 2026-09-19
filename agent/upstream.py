@@ -66,10 +66,24 @@ def parse_allowed(conf: str) -> list[str]:
 def prepare_conf(conf: str) -> str:
     """Конфиг провайдера в том виде, в котором его поднимаем.
 
-    Дописываем `Table = off`: маршруты ставим сами и ровно те, что
-    нужны зонам.
+    Две правки, обе обязательные.
+
+    `Table = off` — маршруты ставим сами и ровно те, что нужны зонам.
+    Без этого конфиг с `AllowedIPs = 0.0.0.0/0` уведёт в чужой туннель
+    весь трафик сервера вместе с SSH.
+
+    Строку `DNS` выкидываем. Во-первых, wg-quick зовёт для неё
+    `resolvconf`, которого в контейнере нет, — и тогда он сносит уже
+    поднятый интерфейс и возвращает ошибку: апстрим не поднимается
+    вовсе. Во-вторых, даже там, где resolvconf есть, провайдерский DNS
+    прописался бы всему серверу — включая клиентов, которые к этому
+    провайдеру отношения не имеют.
     """
-    lines = [l for l in conf.splitlines() if not l.strip().lower().startswith("table")]
+    skip = ("table", "dns")
+    lines = [
+        l for l in conf.splitlines()
+        if not l.strip().lower().split("=")[0].strip() in skip
+    ]
     out: list[str] = []
     for line in lines:
         out.append(line)

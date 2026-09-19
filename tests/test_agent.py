@@ -321,8 +321,12 @@ def main() -> None:
     # обновления или ребута лимиты переставали действовать до первой
     # правки клиента. Со стороны — «ограничение не работает».
     main_src = open(os.path.join(ROOT, "agent", "main.py"), encoding="utf-8").read()
-    check("на старте шейпер перестраивается",
-          "await shaper.apply(store.clients)" in main_src)
+    state_src = open(os.path.join(ROOT, "agent", "state.py"), encoding="utf-8").read()
+    # Вместе с шейпером в ядре живут зоны и туннели провайдеров: после
+    # перезапуска контейнера их тоже нужно поднять, иначе зоны
+    # открываются, а апстримы остаются опущенными.
+    check("на старте правила накатываются целиком",
+          "await store.reapply()" in main_src and "async def reapply" in state_src)
 
     # Всплеск меньше пары десятков килобайт режет мелкие пачки пакетов:
     # TCP не разгоняется, и человек видит «медленно» на выданной скорости.
@@ -490,6 +494,13 @@ def main() -> None:
     # сервера — вместе с клиентами и нашим же SSH.
     check("маршруты wg-quick выключены", "Table = off" in prepared)
     check("чужая Table = 42 убрана", "Table = 42" not in prepared)
+    # wg-quick зовёт для строки DNS resolvconf, которого в контейнере
+    # нет: он сносит уже поднятый интерфейс и возвращает ошибку —
+    # апстрим не поднимается вовсе. А там, где resolvconf есть,
+    # провайдерский DNS прописался бы всему серверу.
+    with_dns = conf.replace("[Peer]", "DNS = 1.1.1.1\n\n[Peer]")
+    check("DNS провайдера не уезжает на сервер",
+          "DNS" not in ups.prepare_conf(with_dns))
     check("имя интерфейса влезает в ядро", len(ups.iface_of("tube-hosting")) <= 15)
     check("кривое имя не принимается",
           not ups.valid_name("../etc/passwd") and not ups.valid_name("имя"))
@@ -558,6 +569,16 @@ def main() -> None:
     for i in range(jr.LIMIT + 50):
         jr.record(many, jr.KIND_CONNECTED, tech, endpoint=f"1.1.1.{i % 250}")
     check("журнал подрезан", len(many) == jr.LIMIT, str(len(many)))
+
+    print(f"\n{B}  · имя файла{N}")
+    # Имя клиента пишет человек: «Сергей — дежурный» валил выдачу
+    # конфига пятисоткой — в заголовки HTTP помещается только latin-1.
+    from agent.main import _attachment
+
+    head = _attachment("Сергей — дежурный", ".conf")["Content-Disposition"]
+    check("заголовок кодируется latin-1", bool(head.encode("latin-1")))
+    check("русское имя сохранено", "filename*=UTF-8''" in head)
+    check("есть простое имя для старых клиентов", 'filename="' in head)
 
     print(f"\n{B}11. QR{N}")
     # segno отдаёт svg БАЙТАМИ: на текстовом буфере ручка падала 500-й,

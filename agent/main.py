@@ -133,15 +133,12 @@ async def _startup() -> None:
             # Не падаем: API должен отвечать даже когда интерфейс не
             # встал — иначе про причину узнать неоткуда.
             logger.error("интерфейс не поднялся: %s", exc)
-    # Правила скорости живут в ядре и исчезают вместе с интерфейсом.
-    # Перестраивались они только при изменении клиента, поэтому после
-    # перезапуска (обновление, ребут VPS) все лимиты тихо переставали
-    # действовать до первой правки — а выглядело это как «ограничение
-    # не работает».
-    try:
-        await shaper.apply(store.clients)
-    except Exception:  # noqa: BLE001
-        logger.exception("шейпер не применился на старте")
+    # Скорость, зоны и туннели провайдеров живут в ядре и исчезают
+    # вместе с контейнером. Перестраивались они только при изменении
+    # клиента, поэтому после перезапуска (обновление, ребут VPS) лимиты
+    # тихо переставали действовать, зоны открывались, а апстримы висели
+    # опущенными — до первой правки в панели.
+    await store.reapply()
     asyncio.create_task(_quota_loop())
 
 
@@ -387,17 +384,37 @@ def _usage_series(history: dict[str, Any], days: int) -> list[dict[str, Any]]:
     return out
 
 
+def _attachment(name: str, suffix: str) -> dict[str, str]:
+    """Заголовок скачивания для имени на любом языке.
+
+    Имя клиента пишет человек, и «Сергей — дежурный» валило выдачу
+    конфига пятисоткой: в заголовки HTTP помещается только latin-1.
+    Поэтому ASCII-имя для старых клиентов и filename* по RFC 5987 —
+    для всех остальных.
+    """
+    from urllib.parse import quote
+
+    # isalnum() пропускает и кириллицу — именно на этом заголовок и
+    # падал. Для простого имени оставляем строго ASCII.
+    ascii_name = "".join(
+        ch for ch in name if (ch.isalnum() and ch.isascii()) or ch in "-_"
+    ) or "client"
+    quoted = quote(f"{name}{suffix}", safe="")
+    return {
+        "Content-Disposition": (
+            f'attachment; filename="{ascii_name}{suffix}"; '
+            f"filename*=UTF-8''{quoted}"
+        )
+    }
+
+
 @app.get("/api/wireguard/client/{key}/configuration", dependencies=[Depends(_authed)])
 async def client_config(key: str) -> PlainTextResponse:
     client = store.find(key)
     if not client:
         raise HTTPException(status_code=404, detail="Клиент не найден")
     text = render.client_conf(store.server, client, store.zone(client.get("zone_id")))
-    filename = "".join(ch for ch in client["name"] if ch.isalnum() or ch in "-_") or "client"
-    return PlainTextResponse(
-        text,
-        headers={"Content-Disposition": f'attachment; filename="{filename}.conf"'},
-    )
+    return PlainTextResponse(text, headers=_attachment(client["name"], ".conf"))
 
 
 @app.get("/api/wireguard/client/{key}/qrcode.svg", dependencies=[Depends(_authed)])
