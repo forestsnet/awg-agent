@@ -128,6 +128,29 @@ class Store:
             self.server["public_key"] = legacy_server.get("publicKey") or (
                 await awg.pubkey(legacy_server["privateKey"])
             )
+        # Плавная миграция: параметры обфускации у amnezia-wg-easy (Jc/Jmin/Jmax/S1/S2/H1..H4)
+        # переносим КАК ЕСТЬ и держим proto=2 — тогда сгенерированный конфиг сервера совпадёт
+        # с уже розданными конфигами, и клиенты продолжат работать без перевыпуска. Регенерация
+        # (наш прежний путь) сменила бы Jc/S1/H1..H4 и разом уронила бы всех.
+        legacy_obf = {k: legacy_server.get(k) for k in
+                      ("jc", "jmin", "jmax", "s1", "s2", "h1", "h2", "h3", "h4")}
+        if all(v is not None for v in legacy_obf.values()):
+            self.server["params"] = {
+                "proto": 2,
+                "jc": int(legacy_obf["jc"]), "jmin": int(legacy_obf["jmin"]),
+                "jmax": int(legacy_obf["jmax"]),
+                "s1": int(legacy_obf["s1"]), "s2": int(legacy_obf["s2"]),
+                # s3/s4 при proto=2 в конфиг не попадают, но держим поля заполненными.
+                "s3": 0, "s4": 0,
+                "h1": int(legacy_obf["h1"]), "h2": int(legacy_obf["h2"]),
+                "h3": int(legacy_obf["h3"]), "h4": int(legacy_obf["h4"]),
+            }
+            # Старые клиенты сигнатурный пакет I1 не ждут — не навязываем.
+            self.server["i1"] = None
+            logger.info("миграция: параметры обфускации 2.0 сохранены — клиенты работают без перевыпуска")
+        else:
+            logger.warning("миграция: в legacy нет параметров обфускации — сгенерированы новые, "
+                           "клиентам понадобится новый конфиг")
 
         for cid, item in (data.get("clients") or {}).items():
             self.clients.append({
