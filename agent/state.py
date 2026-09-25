@@ -41,6 +41,14 @@ def _prune_history(client: dict[str, Any]) -> None:
         history.pop(date, None)
 
 
+def _int_or_zero(value: Any) -> int:
+    """Число из wg0.json старой панели: там бывают строки, пустые и null."""
+    try:
+        return int(str(value).strip() or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 class Store:
     def __init__(self) -> None:
         self.server: dict[str, Any] = {}
@@ -132,25 +140,37 @@ class Store:
                 await awg.pubkey(legacy_server["privateKey"])
             )
         # Плавная миграция: параметры обфускации у amnezia-wg-easy (Jc/Jmin/Jmax/S1/S2/H1..H4)
-        # переносим КАК ЕСТЬ и держим proto=2 — тогда сгенерированный конфиг сервера совпадёт
-        # с уже розданными конфигами, и клиенты продолжат работать без перевыпуска. Регенерация
-        # (наш прежний путь) сменила бы Jc/S1/H1..H4 и разом уронила бы всех.
+        # переносим КАК ЕСТЬ — тогда сгенерированный конфиг сервера совпадёт с уже розданными
+        # конфигами, и клиенты продолжат работать без перевыпуска. Регенерация (наш прежний
+        # путь) сменила бы Jc/S1/H1..H4 и разом уронила бы всех.
+        #
+        # S3/S4 — тоже как есть. rylorin/amnezia-wg-easy 0.0.18+ (им бот ставил v2) пишет их и
+        # в конфиг сервера, и клиентам; сервер без S3/S4 с такими клиентами не сойдётся в
+        # рукопожатии. Набор 2.0 с S3/S4 у агента — proto 3 без ключа заголовков и тумблеров
+        # 3.1: их старые клиенты не знают. Нет S3/S4 (старые сборки панели) — proto 2.
         legacy_obf = {k: legacy_server.get(k) for k in
                       ("jc", "jmin", "jmax", "s1", "s2", "h1", "h2", "h3", "h4")}
-        if all(v is not None for v in legacy_obf.values()):
-            self.server["params"] = {
+        if not config.IS_AWG:
+            pass  # у обычного WireGuard обфускации нет — переносить нечего
+        elif all(v not in (None, "") for v in legacy_obf.values()):
+            s3, s4 = _int_or_zero(legacy_server.get("s3")), _int_or_zero(legacy_server.get("s4"))
+            params: dict[str, Any] = {
                 "proto": 2,
                 "jc": int(legacy_obf["jc"]), "jmin": int(legacy_obf["jmin"]),
                 "jmax": int(legacy_obf["jmax"]),
                 "s1": int(legacy_obf["s1"]), "s2": int(legacy_obf["s2"]),
-                # s3/s4 при proto=2 в конфиг не попадают, но держим поля заполненными.
-                "s3": 0, "s4": 0,
+                "s3": s3, "s4": s4,
                 "h1": int(legacy_obf["h1"]), "h2": int(legacy_obf["h2"]),
                 "h3": int(legacy_obf["h3"]), "h4": int(legacy_obf["h4"]),
             }
+            if s3 or s4:
+                params.update(proto=3, header_protection_key=None,
+                              random_trailers=False, disable_cookies=False)
+            self.server["params"] = params
             # Старые клиенты сигнатурный пакет I1 не ждут — не навязываем.
             self.server["i1"] = None
-            logger.info("миграция: параметры обфускации 2.0 сохранены — клиенты работают без перевыпуска")
+            logger.info("миграция: параметры обфускации 2.0%s сохранены — клиенты работают "
+                        "без перевыпуска", " (с S3/S4)" if s3 or s4 else "")
         else:
             logger.warning("миграция: в legacy нет параметров обфускации — сгенерированы новые, "
                            "клиентам понадобится новый конфиг")

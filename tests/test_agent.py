@@ -239,6 +239,63 @@ def main() -> None:
         check("свой секрет сессий остаётся на месте",
               store.server.get("session_secret") == "секрет-сессий")
 
+    print(f"\n{B}5b. Переезд без перевыпуска: параметры обфускации{N}")
+    # rylorin/amnezia-wg-easy 0.0.18+ (им бот ставил v2) пишет S3/S4 и серверу, и
+    # клиентам. Сервер без них с такими клиентами не сходится в рукопожатии.
+    import importlib
+
+    def _imported(server_extra: dict, proto_env: str = "awg"):
+        with tempfile.TemporaryDirectory() as tmp:
+            legacy = {
+                "server": {"privateKey": "kAsWuXaOmJDM7haVp/J5te6xQ7vOaCHRtvs93NQ5tEI=",
+                           "publicKey": "Eg4GyBHY+Z1+yOGww2HdKKB8prdGdtOmgs9tFPI05m8=",
+                           **server_extra},
+                "clients": {"id-1": {"name": "старый", "enabled": True, "address": "10.8.0.7",
+                                     "privateKey": "priv", "publicKey": "pub"}},
+            }
+            os.environ["WG_PATH"] = tmp
+            os.environ["VPN_PROTO"] = proto_env
+            with open(os.path.join(tmp, "wg0.json"), "w", encoding="utf-8") as fh:
+                json.dump(legacy, fh)
+            from agent import config as cfg
+            importlib.reload(cfg)
+            from agent import render as rnd, state as st
+            importlib.reload(rnd)
+            importlib.reload(st)
+
+            async def fake_keypair():
+                return "newpriv", "newpub"
+            st.awg.keypair = fake_keypair
+            st.awg.sync = lambda: asyncio.sleep(0)
+            st.shaper.apply = lambda clients: asyncio.sleep(0)
+            store = st.Store()
+            asyncio.run(store.load())
+            with open(os.path.join(tmp, "wg0.conf"), encoding="utf-8") as fh:
+                conf = fh.read()
+            return store.server["params"], conf
+
+    rylorin = {"jc": "5", "jmin": "40", "jmax": "90", "s1": "33", "s2": "120",
+               "s3": "77", "s4": "101", "h1": "1111111111", "h2": "1222222222",
+               "h3": "1333333333", "h4": "1444444444", "i1": "", "i2": ""}
+    params, conf = _imported(rylorin)
+    check("rylorin: S3/S4 перенесены как есть",
+          params.get("s3") == 77 and params.get("s4") == 101 and "S3 = 77" in conf and "S4 = 101" in conf,
+          str(params))
+    check("rylorin: Jc/Jmin/Jmax/S1/S2/H — как были",
+          "Jc = 5" in conf and "Jmin = 40" in conf and "Jmax = 90" in conf and "S1 = 33" in conf
+          and "H4 = 1444444444" in conf)
+    check("rylorin: без ключа заголовков и тумблеров 3.1 — старые клиенты их не знают",
+          "HeaderProtectionKey" not in conf and "RandomTrailers" not in conf and "DisableCookies" not in conf)
+    old = {k: v for k, v in rylorin.items() if k not in ("s3", "s4")}
+    params, conf = _imported(old)
+    check("старая панель без S3/S4 — набор 2.0 без них", params.get("proto") == 2 and "S3 =" not in conf,
+          str(params))
+    params, conf = _imported({}, proto_env="wg")
+    check("wg-easy (обычный WireGuard) — без обфускации", params.get("proto") == 0 and "Jc =" not in conf)
+    os.environ["VPN_PROTO"] = "awg"
+    from agent import config as cfg
+    importlib.reload(cfg)
+
     print(f"\n{B}6. Лимиты и сроки{N}")
     from datetime import datetime as _dt, timedelta as _td
 
@@ -705,6 +762,26 @@ def main() -> None:
     main_src = open(os.path.join(ROOT, "agent", "main.py"), encoding="utf-8").read()
     check("обновление ищется в ветке по умолчанию (HEAD), а не в несуществующей main",
           "/commits/HEAD" in main_src and "/commits/main" not in main_src)
+
+    print(f"\n{B}13. Скрипт миграции{N}")
+    # Живой прогон — в docker-in-docker со старой панелью rylorin 0.0.19 и wg-easy 14:
+    # старый клиентский конфиг ходит через агента (сводка сессии 25.09).
+    mig = open(os.path.join(ROOT, "migrate-from-wg-easy.sh"), encoding="utf-8").read()
+    check("экземпляр — как у установщика бота (vpn-agent-update его находит)",
+          'BASE_DIR="/opt/vpn-agent"' in mig and 'DIR="$BASE_DIR/$PROTO-agent-$i"' in mig
+          and "container_name: $NAME" in mig and 'echo "PORT=$UI_PORT"' in mig)
+    check("пароль — не в .env (интерполяция съедает $ bcrypt)", 'PASSWORD_HASH: "$HASH_YAML"' in mig)
+    check("после старта сверяются параметры обфускации, S3/S4 тоже — иначе откат",
+          '"s3", "s4"' in mig and "параметры обфускации на агенте не совпали" in mig)
+    check("без параметров обфускации — отказ, а не новые конфиги всем",
+          "--allow-reissue" in mig and 'if [ "$HASOBF" != yes ] && [ "$ALLOW_REISSUE" != 1 ]' in mig)
+    check("wg-easy 15+ (SQLite) — честный отказ", "wg-easy.db" in mig)
+    check("откат проверяет, что старая панель ОТВЕЧАЕТ, и снимает метку",
+          "old_back()" in mig and 'mv "$mark" "$mark.rolled-back"' in mig)
+    check("неудачные и откаченные — вне /opt/vpn-agent", 'ATTIC="/opt/vpn-agent.attic"' in mig)
+    check("уже переведённый и занятые порты — отказ",
+          "уже переведён на агента" in mig and "занят контейнером" in mig)
+    check("бот различает исход: RESULT ok/fail и PLAN", 'echo "RESULT fail $*"' in mig and "PLAN s3s4=" in mig)
 
     if failures:
         print(f"\n{R}Провалено: {len(failures)}{N}")
