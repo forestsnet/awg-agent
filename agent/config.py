@@ -134,3 +134,9 @@ TORRENT_WEBHOOK_URL = os.environ.get("TORRENT_WEBHOOK_URL", "").strip()
 TORRENT_WEBHOOK_SECRET = os.environ.get("TORRENT_WEBHOOK_SECRET", "").strip()
 TORRENT_NODE_NAME = os.environ.get("TORRENT_NODE_NAME", "").strip()
 TORRENT_BLOCK_DURATION = _int("TORRENT_BLOCK_DURATION", 3600)
+
+# Персональные логи пользователей (опционально, по галочке на клиенте).
+# Ротация в процессе, по размеру — агент в контейнере, host-logrotate нет.
+USERLOG_MAX_BYTES = _int("USERLOG_MAX_BYTES", 5 * 1024 * 1024)
+USERLOG_KEEP = _int("USERLOG_KEEP", 5)
+USERLOG_SNAPSHOT_SECONDS = _int("USERLOG_SNAPSHOT_SECONDS", 900)

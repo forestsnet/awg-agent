@@ -50,6 +50,8 @@ class ClientIn(BaseModel):
     # Опционально: контакты для отчётов торрент-блокировщика.
     telegram_id: Optional[str] = Field(default=None, max_length=64)
     email: Optional[str] = Field(default=None, max_length=254)
+    # Опционально: сразу включить персональный лог клиента.
+    log_enabled: bool = False
 
 
 class ContactIn(BaseModel):
@@ -67,6 +69,10 @@ class TorrentConfigIn(BaseModel):
     webhook_secret: Optional[str] = Field(default=None, max_length=512)
     node_name: Optional[str] = Field(default=None, max_length=120)
     block_duration: Optional[int] = Field(default=None, ge=0)
+
+
+class UserLogIn(BaseModel):
+    enabled: bool = False
 
 
 class QuotaIn(BaseModel):
@@ -255,6 +261,7 @@ def _out(client: dict[str, Any], stats: dict[str, Any]) -> dict[str, Any]:
         "telegramId": client.get("telegram_id"),
         "email": client.get("email"),
         "torrentExempt": bool(client.get("torrent_exempt", False)),
+        "logEnabled": bool(client.get("log_enabled", False)),
     }
 
 
@@ -280,7 +287,8 @@ async def client_create(payload: ClientIn) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Имя не задано")
     if any(c["name"] == name for c in store.clients):
         raise HTTPException(status_code=400, detail="Клиент с таким именем уже есть")
-    client = await store.create(name, telegram_id=payload.telegram_id, email=payload.email)
+    client = await store.create(name, telegram_id=payload.telegram_id, email=payload.email,
+                                log_enabled=payload.log_enabled)
     logger.info("клиент создан: %s (%s)", name, client["address"])
     return _out(client, await awg.peer_stats(force=True))
 
@@ -488,6 +496,28 @@ async def client_contact(key: str, payload: ContactIn) -> dict[str, Any]:
 @app.put("/api/wireguard/client/{key}/torrent", dependencies=[Depends(_authed)])
 async def client_torrent(key: str, payload: TorrentExemptIn) -> dict[str, Any]:
     if not await store.set_torrent_exempt(key, payload.exempt):
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    return {"success": True}
+
+
+@app.put("/api/wireguard/client/{key}/log", dependencies=[Depends(_authed)])
+async def client_log_set(key: str, payload: UserLogIn) -> dict[str, Any]:
+    if not await store.set_user_log(key, payload.enabled):
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    return {"success": True, "logEnabled": payload.enabled}
+
+
+@app.get("/api/wireguard/client/{key}/log", dependencies=[Depends(_authed)])
+async def client_log_get(key: str, limit: int = 200) -> dict[str, Any]:
+    data = store.user_log_tail(key, max(1, min(int(limit), 2000)))
+    if data is None:
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    return data
+
+
+@app.delete("/api/wireguard/client/{key}/log", dependencies=[Depends(_authed)])
+async def client_log_purge(key: str) -> dict[str, Any]:
+    if not await store.purge_user_log(key):
         raise HTTPException(status_code=404, detail="Клиент не найден")
     return {"success": True}
 

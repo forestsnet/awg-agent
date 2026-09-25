@@ -186,6 +186,15 @@
       <div class="muted" style="font-size:13px">Обычно торрент режется. Включи, чтобы этому клиенту разрешить.</div>
     </div>
 
+    <div class="field">
+      <div class="field-head">
+        <span>Логи клиента</span>
+        <label class="switch"><input type="checkbox" id="limit-log-enabled"><span>Хранить</span></label>
+      </div>
+      <div class="muted" style="font-size:13px">Сессии, торрент-хиты и срезы трафика в отдельный файл, авторотация по размеру. По умолчанию выкл.</div>
+      <button type="button" class="secondary" id="limit-log-view" style="margin-top:8px"><span data-icon="scroll" data-size="15"></span> Показать логи</button>
+    </div>
+
     <label class="field">
       Telegram ID <span class="muted">— для отчётов</span>
       <input id="limit-tg" placeholder="123456789" maxlength="64" inputmode="numeric">
@@ -200,6 +209,20 @@
       <button type="submit" class="primary">Сохранить</button>
     </div>
   </form>
+</div>
+
+<div id="log-modal" class="modal hidden">
+  <div class="modal-card wide">
+    <div class="modal-head"><b id="log-title">Логи</b>
+      <button class="icon" data-close><span data-icon="close" data-size="16"></span></button></div>
+    <div class="muted" id="log-meta" style="margin-bottom:8px"></div>
+    <pre id="log-body" style="max-height:52vh;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:12.5px;line-height:1.55;margin:0"></pre>
+    <div class="modal-foot">
+      <button type="button" class="secondary" id="log-purge">Очистить</button>
+      <button type="button" class="secondary" id="log-download"><span data-icon="download" data-size="16"></span>Скачать</button>
+      <button type="button" class="secondary" data-close>Закрыть</button>
+    </div>
+  </div>
 </div>
 
 <div id="usage-modal" class="modal hidden">

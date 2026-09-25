@@ -47,6 +47,7 @@ def record(
     client: dict[str, Any] | None = None,
     *,
     at: Optional[datetime] = None,
+    sink: Any = None,
     **extra: Any,
 ) -> dict[str, Any]:
     """Добавить запись и подрезать журнал."""
@@ -62,6 +63,11 @@ def record(
             entry["zone_id"] = client.get("zone_id")
     entry.update({k: v for k, v in extra.items() if v is not None})
     events.append(entry)
+    if sink is not None and client is not None:
+        try:
+            sink(client, entry)
+        except Exception:  # noqa: BLE001
+            pass
     if len(events) > LIMIT:
         del events[: len(events) - LIMIT]
     return entry
@@ -72,6 +78,7 @@ def observe(
     client: dict[str, Any],
     live: dict[str, Any],
     now: datetime,
+    sink: Any = None,
 ) -> None:
     """Посмотреть на живые счётчики пира и дописать журнал.
 
@@ -90,7 +97,7 @@ def observe(
         if session and endpoint and session.get("endpoint") != endpoint:
             # Переехал в другую сеть: старую сессию закрываем, чтобы в
             # журнале было видно откуда и докуда он был.
-            close(events, client, now, reason="сменил сеть")
+            close(events, client, now, reason="сменил сеть", sink=sink)
             session = None
         if not session:
             client["session"] = {
@@ -100,7 +107,7 @@ def observe(
                 "tx0": tx,
                 "last_at": _iso(now),
             }
-            record(events, KIND_CONNECTED, client, at=now, endpoint=endpoint)
+            record(events, KIND_CONNECTED, client, at=now, endpoint=endpoint, sink=sink)
         else:
             session["last_at"] = _iso(now)
             if endpoint:
@@ -112,7 +119,7 @@ def observe(
     if session:
         last = parse(session.get("last_at"))
         if not last or now - last > IDLE_GAP:
-            close(events, client, now)
+            close(events, client, now, sink=sink)
 
 
 def close(
@@ -121,6 +128,7 @@ def close(
     now: datetime,
     *,
     reason: Optional[str] = None,
+    sink: Any = None,
 ) -> None:
     """Закрыть сессию и записать, сколько она длилась и что прокачала."""
     session = client.pop("session", None)
@@ -143,6 +151,7 @@ def close(
         rx=max(rx, 0),
         tx=max(tx, 0),
         reason=reason,
+        sink=sink,
     )
 
 

@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-from . import awg, config, journal, proto, quota, render, shaper, torrent, upstream, zones
+from . import awg, config, journal, proto, quota, render, shaper, torrent, upstream, userlog, zones
 
 logger = logging.getLogger("state")
 
@@ -56,6 +56,8 @@ class Store:
         # Конфиг торрент-блокировщика: webhook_url/secret, node_name, block_duration, enabled.
         self.torrent: dict[str, Any] = {}
         self._lock = asyncio.Lock()
+        # Срезы трафика для персонального лога: client_id -> (ts, rx, tx).
+        self._log_snap: dict[str, tuple[float, int, int]] = {}
 
     # ── Загрузка ────────────────────────────────────────────────────
 
@@ -80,6 +82,7 @@ class Store:
             c.setdefault("telegram_id", None)
             c.setdefault("email", None)
             c.setdefault("torrent_exempt", False)
+            c.setdefault("log_enabled", False)
         # Конфиг интерфейса пересобираем на каждом старте. Он собран из
         # состояния и окружения, а они между запусками меняются: агент
         # переехал в новый контейнер — сменился интерфейс для NAT,
@@ -340,7 +343,8 @@ class Store:
         return None
 
     async def create(self, name: str, telegram_id: Optional[str] = None,
-                     email: Optional[str] = None) -> dict[str, Any]:
+                     email: Optional[str] = None,
+                     log_enabled: bool = False) -> dict[str, Any]:
         async with self._lock:
             private, public = await awg.keypair()
             client = {
@@ -361,6 +365,8 @@ class Store:
                 "email": (str(email).strip() or None) if email else None,
                 # Исключение из торрент-блокировщика: True — клиенту торрент разрешён.
                 "torrent_exempt": False,
+                # Хранить персональный лог клиента (сессии/торрент/срезы трафика).
+                "log_enabled": bool(log_enabled),
                 # Лимиты: 0 — без лимита, период сброса «none».
                 "quota_bytes": 0,
                 "quota_period": "none",
@@ -389,6 +395,11 @@ class Store:
                 return False
             self.clients.remove(client)
             journal.record(self.events, journal.KIND_DELETED, client)
+            self._log_snap.pop(client.get("id"), None)
+            try:
+                userlog.purge(client["id"])
+            except Exception:  # noqa: BLE001
+                logger.exception("userlog: purge при удалении")
             await self.apply()
             return True
 
@@ -616,6 +627,34 @@ class Store:
 
     # ── Торрент-блокировщик ──────────────────────────────────────────
 
+    def _log_sink(self, client: dict[str, Any], entry: dict[str, Any]) -> None:
+        """Зеркалим событие journal в персональный лог клиента (если включён)."""
+        try:
+            userlog.write(client, entry)
+        except Exception:  # noqa: BLE001
+            logger.exception("userlog: sink")
+
+    def _log_snapshot(self, client: dict[str, Any], live: dict[str, Any],
+                      now: datetime) -> None:
+        """Периодический срез трафика в персональный лог (по галочке)."""
+        cid = client.get("id")
+        if not cid:
+            return
+        ts = now.timestamp()
+        rx = int(live.get("transfer_rx", 0))
+        tx = int(live.get("transfer_tx", 0))
+        prev = self._log_snap.get(cid)
+        if prev and ts - prev[0] < config.USERLOG_SNAPSHOT_SECONDS:
+            return
+        d_rx = quota.delta(prev[1], rx) if prev else 0
+        d_tx = quota.delta(prev[2], tx) if prev else 0
+        self._log_snap[cid] = (ts, rx, tx)
+        userlog.write(client, {
+            "kind": "traffic",
+            "endpoint": live.get("endpoint"),
+            "rx": rx, "tx": tx, "rxDelta": d_rx, "txDelta": d_tx,
+        })
+
     def _seed_torrent(self) -> None:
         """Заполнить недостающие поля конфига торрента из окружения (стартовые сиды)."""
         defaults = {
@@ -668,8 +707,51 @@ class Store:
 
     async def record_torrent(self, client: dict[str, Any], ip: str) -> None:
         async with self._lock:
-            journal.record(self.events, journal.KIND_TORRENT, client)
+            journal.record(self.events, journal.KIND_TORRENT, client,
+                           sink=self._log_sink, peer=ip)
             await self.persist_state()
+
+    # ── Персональные логи пользователей ──────────────────────────────
+
+    async def set_user_log(self, key: str, enabled: bool) -> bool:
+        """Вкл/выкл хранение персонального лога клиента (галочка)."""
+        async with self._lock:
+            client = self.find(key)
+            if not client:
+                return False
+            was = bool(client.get("log_enabled"))
+            if enabled and not was:
+                client["log_enabled"] = True
+                userlog.write(client, {"kind": "log", "state": "enabled"})
+            elif was and not enabled:
+                # Маркер пишем, пока флаг ещё включён (writer проверяет его).
+                userlog.write(client, {"kind": "log", "state": "disabled"})
+                client["log_enabled"] = False
+                self._log_snap.pop(client.get("id"), None)
+            client["updated_at"] = _now()
+            await self.persist_state()
+            return True
+
+    def user_log_tail(self, key: str, limit: int = 200) -> Optional[dict[str, Any]]:
+        """Хвост персонального лога клиента (свежие сверху) + метаданные."""
+        client = self.find(key)
+        if not client:
+            return None
+        return {
+            "logEnabled": bool(client.get("log_enabled")),
+            "sizeBytes": userlog.size(client["id"]),
+            "entries": userlog.tail(client["id"], limit),
+        }
+
+    async def purge_user_log(self, key: str) -> bool:
+        """Удалить все персональные логи клиента."""
+        async with self._lock:
+            client = self.find(key)
+            if not client:
+                return False
+            userlog.purge(client["id"])
+            self._log_snap.pop(client.get("id"), None)
+            return True
 
     # ── Учёт трафика и применение лимитов ───────────────────────────
 
@@ -709,7 +791,11 @@ class Store:
                 # Журнал считаем по тем же живым счётчикам: отдельный
                 # опрос ради него был бы лишним запуском бинарника раз
                 # в десять секунд.
-                journal.observe(self.events, client, live, now)
+                journal.observe(self.events, client, live, now, sink=self._log_sink)
+
+                # Срез трафика в персональный лог (по галочке, раз в N секунд).
+                if live and userlog.enabled(client):
+                    self._log_snapshot(client, live, now)
 
                 was_enabled = client.get("enabled", True)
                 events = quota.apply(client, now)

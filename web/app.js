@@ -33,6 +33,7 @@ const ICONS = {
   archive: '<rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>',
   chart: '<path d="M3 3v16a2 2 0 0 0 2 2h16"/><rect x="7" y="13" width="3" height="5" rx="1"/><rect x="12" y="9" width="3" height="9" rx="1"/><rect x="17" y="5" width="3" height="13" rx="1"/>',
   magnet: '<path d="m6 15-4-4 6.75-6.77a7.79 7.79 0 0 1 11 11L13 22l-4-4 6.39-6.36a2.14 2.14 0 0 0-3-3L6 15"/><path d="m5 8 4 4"/><path d="m12 15 4 4"/>',
+  scroll: '<path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>',
 };
 
 const icon = (name, size = 18) =>
@@ -410,6 +411,7 @@ function renderQuota(row, c) {
 /* ── Лимит и срок ───────────────────────────────────────────────── */
 
 let limitsFor = null;
+let logCtx = null;
 
 // Единицу подбираем по величине, а число округляем: показывать
 // «9.313225746154785e-7 ГБ» вместо «безлимита» — это издевательство.
@@ -466,6 +468,8 @@ function openLimits(client) {
   $('expires-never').checked = !client.expiresAt;
   $('limit-expires').value = client.expiresAt ? client.expiresAt.slice(0, 10) : '';
   $('limit-torrent-exempt').checked = !!client.torrentExempt;
+  $('limit-log-enabled').checked = !!client.logEnabled;
+  logCtx = { id: client.id, name: client.name };
   $('limit-tg').value = client.telegramId || '';
   $('limit-email').value = client.email || '';
   syncUnlimited();
@@ -512,6 +516,10 @@ $('limits-form').addEventListener('submit', async (e) => {
       method: 'PUT',
       body: JSON.stringify({ exempt: $('limit-torrent-exempt').checked }),
     });
+    await api(`/api/wireguard/client/${limitsFor}/log`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled: $('limit-log-enabled').checked }),
+    });
     closeModal('limits-modal');
     toast(bytes ? `Лимит ${fmtBytes(bytes)} ${PERIOD_LABEL[$('limit-period').value]}` : 'Без лимита');
     await refresh();
@@ -526,6 +534,62 @@ $('limit-reset').addEventListener('click', async () => {
     toast('Счётчик обнулён');
     await refresh();
   } catch (err) { toast(err.message, 'err'); }
+});
+
+function fmtLogEntry(e) {
+  const at = (e.at || '').replace('T', ' ').replace('Z', '');
+  const k = e.kind || '?';
+  let d;
+  if (k === 'connected') d = `подключился${e.endpoint ? ' — ' + e.endpoint : ''}`;
+  else if (k === 'disconnected') d = `отключился — ${e.seconds != null ? e.seconds + ' c, ' : ''}↓${fmtBytes(e.rx || 0)} ↑${fmtBytes(e.tx || 0)}${e.reason ? ' · ' + e.reason : ''}`;
+  else if (k === 'traffic') d = `трафик ↓${fmtBytes(e.rx || 0)} ↑${fmtBytes(e.tx || 0)} (Δ↓${fmtBytes(e.rxDelta || 0)} Δ↑${fmtBytes(e.txDelta || 0)})${e.endpoint ? ' · ' + e.endpoint : ''}`;
+  else if (k === 'torrent') d = `торрент${e.peer ? ' — пир ' + e.peer : ''}`;
+  else if (k === 'log') d = `лог ${e.state || ''}`;
+  else if (k === 'zone') d = `зона${e.zone_id ? ' ' + e.zone_id : ''}`;
+  else d = k;
+  return `${at}  ${d}`;
+}
+
+async function openLog(id, name) {
+  logCtx = { id, name, rows: [] };
+  $('log-title').textContent = `Логи — ${name}`;
+  $('log-meta').textContent = '';
+  $('log-body').textContent = 'загрузка…';
+  openModal('log-modal');
+  try {
+    const data = await api(`/api/wireguard/client/${id}/log?limit=1000`);
+    const rows = data.entries || [];
+    logCtx.rows = rows;
+    $('log-meta').textContent = `${data.logEnabled ? 'логи включены' : 'логи выключены'} · показано ${rows.length} · размер ${fmtBytes(data.sizeBytes || 0)}`;
+    $('log-body').textContent = rows.length ? rows.map(fmtLogEntry).join('\n') : 'пусто';
+  } catch (err) {
+    $('log-body').textContent = 'ошибка: ' + err.message;
+  }
+}
+
+$('limit-log-view').addEventListener('click', () => {
+  if (logCtx && logCtx.id) openLog(logCtx.id, logCtx.name);
+});
+
+$('log-download').addEventListener('click', () => {
+  if (!logCtx || !logCtx.rows || !logCtx.rows.length) return toast('Пусто', 'err');
+  const text = logCtx.rows.map((r) => JSON.stringify(r)).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'application/x-ndjson' }));
+  a.download = `${(logCtx.name || 'client').replace(/[^\w.-]+/g, '_')}.log.jsonl`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+$('log-purge').addEventListener('click', () => {
+  if (!logCtx || !logCtx.id) return;
+  askConfirm('Очистить логи?', `Удалить все сохранённые логи «${logCtx.name}». Отменить нельзя.`, 'Очистить', async () => {
+    try {
+      await api(`/api/wireguard/client/${logCtx.id}/log`, { method: 'DELETE' });
+      toast('Логи очищены');
+      openLog(logCtx.id, logCtx.name);
+    } catch (err) { toast(err.message, 'err'); }
+  });
 });
 
 const fmtRate = (bps) => (bps >= 1e9
