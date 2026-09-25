@@ -2,7 +2,9 @@
 
 И `native-torrent-blocker`, и встроенный блокировщик `awg-agent` шлют отчёт о пойманном торренте **в том же формате, что и Remnawave** (`torrent_blocker.report`) — существующий бот принимает их без правок.
 
-Отчёт уходит, когда клиент словил блокировку торрента (nft-дроп DHT/uTP/tracker), с кулдауном на клиента (по умолчанию 1 час). Если вебхук не настроен — блокировка работает, отчёты не шлются.
+Отчёт уходит, когда клиент словил блокировку торрента (nft-дроп DHT/uTP/tracker — по IPv4 и IPv6), с кулдауном на клиента 1 час. Если вебхук не настроен — блокировка работает, отчёты не шлются.
+
+Если задан бан (`block_duration` > 0), клиент на это время теряет весь доступ — как `blocked` в Remnawave; `blockDuration` и `willUnblockAt` в отчёте — про него. При `block_duration` = 0 режутся только торрент-пакеты: `blockDuration: 0`, `willUnblockAt: null`.
 
 ## Запрос
 
@@ -35,7 +37,7 @@
     "report": {
       "actionReport": {
         "blocked": true,
-        "ip": "203.0.113.7",
+        "ip": "10.8.0.5",
         "blockDuration": 3600,
         "willUnblockAt": "2026-09-25T02:45:59Z",
         "userId": "123456789",
@@ -62,7 +64,8 @@
 - `data.node.name` — имя ноды (задаётся при установке).
 - `data.user.telegramId` / `data.user.email` — контакты клиента, если заданы при создании или в модалке (иначе `null`). По ним бот сразу знает, кому писать.
 - `data.user.username` — имя клиента (в awg-agent), в standalone — pubkey/адрес.
-- `actionReport.ip` — адрес, по которому идентифицирован клиент (WG: endpoint или адрес в туннеле).
+- `actionReport.ip` — адрес клиента в туннеле (v4 или его v6-зеркало), по нему же и бан.
+- `actionReport.blockDuration` — срок бана, сек (0 — бана нет); `willUnblockAt` — когда снимется (`null` без бана).
 - `xrayReport.protocol` = `fsnt-torrent-blocker` — метка наших срабатываний (у нативного Remnawave здесь `bittorrent`). По ней в панели/боте отличают источник.
 - `xrayReport.destination` — у WG обычно `null` (детект по set нарушителей, без адреса пира); у standalone с чтением kernel-лога может быть заполнен.
 
@@ -89,7 +92,7 @@ function verify(rawBody, signature, secret) {
 
 ## Что делать боту
 
-То же, что и с нативным `torrent_blocker.report` Remnawave: залогировать, уведомить, при повторах — отключить клиента (в awg-agent — `POST /api/wireguard/client/{id}/disable`; в панели Remnawave — перевести в DISABLED). Блокировку самого торрент-трафика делает nft на ноде и без бота — вебхук нужен для реакции на нарушителя.
+То же, что и с нативным `torrent_blocker.report` Remnawave: залогировать, уведомить, при повторах — отключить клиента (в awg-agent — `POST /api/wireguard/client/{id}/disable`; в панели Remnawave — перевести в DISABLED). Блокировку торрент-трафика и бан делает nft на ноде и без бота — вебхук нужен для реакции на нарушителя. Снять бан досрочно — `POST /api/wireguard/client/{id}/unban`.
 
 ## Управление блокировщиком и логами
 

@@ -68,7 +68,8 @@ class TorrentConfigIn(BaseModel):
     webhook_url: Optional[str] = Field(default=None, max_length=2048)
     webhook_secret: Optional[str] = Field(default=None, max_length=512)
     node_name: Optional[str] = Field(default=None, max_length=120)
-    block_duration: Optional[int] = Field(default=None, ge=0)
+    # Бан за торрент, сек: 0 — без бана, потолок — месяц.
+    block_duration: Optional[int] = Field(default=None, ge=0, le=torrent.MAX_BAN_SECONDS)
 
 
 class UserLogIn(BaseModel):
@@ -381,7 +382,17 @@ async def client_usage(key: str, days: int = 30) -> dict[str, Any]:
         "zoneId": client.get("zone_id"),
         "enabled": bool(client.get("enabled", True)),
         "disabledReason": client.get("disabled_reason"),
+        # Торрент и лог — здесь же: боту иначе нужен весь список клиентов.
+        "torrentExempt": bool(client.get("torrent_exempt", False)),
+        "logEnabled": bool(client.get("log_enabled", False)),
+        "torrentBannedFor": await _banned_for(client),
     }
+
+
+async def _banned_for(client: dict[str, Any]) -> int:
+    """Сколько секунд клиенту осталось в бане за торрент (0 — не в бане)."""
+    current = await torrent.banned()
+    return max((current.get(ip, 0) for ip in torrent.client_ips(client)), default=0)
 
 
 @app.get("/api/usage", dependencies=[Depends(_authed)])
@@ -532,11 +543,33 @@ async def torrent_get() -> dict[str, Any]:
         "webhookSecretSet": bool(cfg.get("webhook_secret")),
         "webhookConfigured": torrent.configured(cfg),
         "nodeName": cfg.get("node_name") or "",
-        "blockDuration": int(cfg.get("block_duration") or 3600),
+        # Срок бана за торрент, сек. 0 — без бана: режутся только торрент-пакеты.
+        "blockDuration": torrent.ban_seconds(cfg),
+        "nftAvailable": await torrent.available(),
         "active": await torrent.loaded(),
         "counters": await torrent.counters(),
         "exemptCount": sum(1 for c in store.clients if c.get("torrent_exempt")),
+        "banned": _banned_rows(await torrent.banned()),
     }
+
+
+def _banned_rows(current: dict[str, int]) -> list[dict[str, Any]]:
+    """Кто в бане: по клиенту одна строка (v4 и v6 — один человек)."""
+    rows: dict[str, dict[str, Any]] = {}
+    for c in store.clients:
+        left = max((current.get(ip, 0) for ip in torrent.client_ips(c)
+                    if ip in current), default=None)
+        if left is not None:
+            rows[c["id"]] = {"id": c["id"], "name": c.get("name"), "expiresIn": left}
+    return sorted(rows.values(), key=lambda r: -r["expiresIn"])
+
+
+@app.post("/api/wireguard/client/{key}/unban", dependencies=[Depends(_authed)])
+async def client_unban(key: str) -> dict[str, Any]:
+    was = await store.unban(key)
+    if was is None:
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    return {"success": True, "wasBanned": was}
 
 
 @app.put("/api/torrent", dependencies=[Depends(_authed)])
@@ -830,13 +863,15 @@ def _has(binary: str) -> bool:
 
 
 async def _latest_build() -> Optional[str]:
-    """Короткий sha последнего коммита main в репозитории агента (через GitHub API)."""
+    """Короткий sha последнего коммита ветки по умолчанию (через GitHub API)."""
     import json as _json
     import urllib.request
 
     def fetch() -> str:
         req = urllib.request.Request(
-            "https://api.github.com/repos/forestsnet/awg-agent/commits/main",
+            # HEAD — ветка по умолчанию (у репозитория это master, а не main:
+            # по «main» GitHub отвечает 422, и обновление не находилось никогда).
+            "https://api.github.com/repos/forestsnet/awg-agent/commits/HEAD",
             headers={"User-Agent": "awg-agent", "Accept": "application/vnd.github+json"},
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -850,7 +885,7 @@ async def _latest_build() -> Optional[str]:
 
 @app.get("/api/update", dependencies=[Depends(_authed)])
 async def update_check() -> dict[str, Any]:
-    """Есть ли новая версия. Сравниваем sha сборки с последним коммитом main."""
+    """Есть ли новая версия. Сравниваем sha сборки с последним коммитом репозитория."""
     latest = await _latest_build()
     available = bool(latest and __build__ not in ("dev", "") and latest != __build__)
     return {"current": __build__, "version": __version__, "latest": latest,

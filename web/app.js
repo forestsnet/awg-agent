@@ -543,7 +543,8 @@ function fmtLogEntry(e) {
   if (k === 'connected') d = `подключился${e.endpoint ? ' — ' + e.endpoint : ''}`;
   else if (k === 'disconnected') d = `отключился — ${e.seconds != null ? e.seconds + ' c, ' : ''}↓${fmtBytes(e.rx || 0)} ↑${fmtBytes(e.tx || 0)}${e.reason ? ' · ' + e.reason : ''}`;
   else if (k === 'traffic') d = `трафик ↓${fmtBytes(e.rx || 0)} ↑${fmtBytes(e.tx || 0)} (Δ↓${fmtBytes(e.rxDelta || 0)} Δ↑${fmtBytes(e.txDelta || 0)})${e.endpoint ? ' · ' + e.endpoint : ''}`;
-  else if (k === 'torrent') d = `торрент${e.peer ? ' — пир ' + e.peer : ''}`;
+  else if (k === 'torrent') d = `торрент${e.peer ? ' — ' + e.peer : ''}${e.ban ? ' · бан ' + fmtLeft(e.ban) : ''}`;
+  else if (k === 'torrent_unban') d = 'бан за торрент снят';
   else if (k === 'log') d = `лог ${e.state || ''}`;
   else if (k === 'zone') d = `зона${e.zone_id ? ' ' + e.zone_id : ''}`;
   else d = k;
@@ -694,15 +695,51 @@ async function openTorrent() {
     $('tor-secret-set').textContent = t.webhookSecretSet
       ? '— задан, оставьте пустым чтобы не менять' : '— не задан';
     $('tor-node').value = t.nodeName || '';
-    $('tor-dur').value = t.blockDuration || 3600;
+    // 0 — осмысленное значение (без бана), «|| 3600» его затирало.
+    $('tor-dur').value = String(t.blockDuration ?? 3600);
     const c = t.counters || {};
     const hits = (c.dht || 0) + (c.utp || 0) + (c.tracker || 0);
+    const banned = t.banned || [];
     $('tor-status').textContent =
-      `${t.active ? 'активна' : 'не загружена'} · вебхук ${t.webhookConfigured ? 'настроен' : 'не настроен'}`
-      + ` · исключений ${t.exemptCount || 0} · дропов ${hits}`;
+      (t.nftAvailable === false ? 'nft не установлен — блокировка не работает · ' : '')
+      + `${t.active ? 'активна' : 'не загружена'} · вебхук ${t.webhookConfigured ? 'настроен' : 'не настроен'}`
+      + ` · исключений ${t.exemptCount || 0} · дропов ${hits} · в бане ${banned.length}`;
+    renderBanned(banned);
     $('tor-update-status').textContent = '—';
     openModal('torrent-modal');
   } catch (err) { toast(err.message, 'err'); }
+}
+
+function fmtLeft(sec) {
+  const m = Math.ceil((sec || 0) / 60);
+  return m >= 60 ? `${Math.floor(m / 60)} ч ${m % 60} мин` : `${m} мин`;
+}
+
+function renderBanned(rows) {
+  const box = $('tor-banned');
+  box.textContent = '';
+  $('tor-banned-wrap').hidden = !rows.length;
+  for (const r of rows) {
+    const line = document.createElement('div');
+    line.className = 'pair';
+    line.style.alignItems = 'center';
+    line.style.justifyContent = 'space-between';
+    const label = document.createElement('span');
+    label.textContent = `${r.name || r.id} — ещё ${fmtLeft(r.expiresIn)}`;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'secondary';
+    btn.textContent = 'Снять';
+    btn.addEventListener('click', async () => {
+      try {
+        await api(`/api/wireguard/client/${r.id}/unban`, { method: 'POST' });
+        toast(`Бан снят: ${r.name || r.id}`);
+        await openTorrent();
+      } catch (err) { toast(err.message, 'err'); }
+    });
+    line.append(label, btn);
+    box.append(line);
+  }
 }
 $('torrent-btn').addEventListener('click', openTorrent);
 
@@ -712,7 +749,7 @@ $('torrent-form').addEventListener('submit', async (e) => {
     enabled: $('tor-enabled').checked,
     webhook_url: $('tor-url').value.trim(),
     node_name: $('tor-node').value.trim(),
-    block_duration: parseInt($('tor-dur').value || '3600', 10),
+    block_duration: Math.max(0, parseInt($('tor-dur').value || '0', 10) || 0),
   };
   const secret = $('tor-secret').value;
   if (secret) body.webhook_secret = secret;   // пустой — не меняем

@@ -3,7 +3,9 @@
 # что протокол на сервере клиента меняется сам по себе.
 FROM amneziavpn/amneziawg-go:3.1.20260828
 
-RUN apk add --no-cache python3 py3-pip iptables ip6tables dumb-init
+# nftables — торрент-блокировщику (nft-таблица btguard). Без утилиты nft он не поднимался
+# вовсе: в базовом образе только iptables, а ошибка тонула в логе.
+RUN apk add --no-cache python3 py3-pip iptables ip6tables nftables dumb-init
 
 WORKDIR /app
 COPY requirements.txt ./

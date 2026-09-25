@@ -253,7 +253,7 @@ class Store:
         # не касается. Выключен в конфиге — снимаем, чтобы не блокировал после отключения.
         try:
             if self.torrent.get("enabled", True):
-                await torrent.apply(self.clients)
+                await torrent.apply(self.clients, self.torrent)
             else:
                 await torrent.teardown()
         except Exception:  # noqa: BLE001
@@ -707,9 +707,24 @@ class Store:
 
     async def record_torrent(self, client: dict[str, Any], ip: str) -> None:
         async with self._lock:
+            # ban — на сколько секунд клиент потерял доступ (0/нет — только дроп торрента).
             journal.record(self.events, journal.KIND_TORRENT, client,
-                           sink=self._log_sink, peer=ip)
+                           sink=self._log_sink, peer=ip,
+                           ban=torrent.ban_seconds(self.torrent) or None)
             await self.persist_state()
+
+    async def unban(self, key: str) -> Optional[bool]:
+        """Снять бан за торрент досрочно. None — клиента нет; False — не был в бане."""
+        client = self.find(key)
+        if not client:
+            return None
+        was = await torrent.unban(client)
+        if was:
+            async with self._lock:
+                journal.record(self.events, journal.KIND_TORRENT_UNBAN, client,
+                               sink=self._log_sink)
+                await self.persist_state()
+        return was
 
     # ── Персональные логи пользователей ──────────────────────────────
 

@@ -294,9 +294,15 @@
         <input id="tor-node" placeholder="awg-de-1" maxlength="120">
       </label>
       <label class="field" style="width:130px">
-        Блок, сек
-        <input id="tor-dur" type="number" min="0" step="60" placeholder="3600">
+        Бан, сек
+        <input id="tor-dur" type="number" min="0" max="2592000" step="60" placeholder="3600">
       </label>
+    </div>
+    <div class="muted" style="font-size:13px;margin:-4px 0 12px">Поймали на торренте — клиент на это время теряет весь доступ, как в Remnawave. 0 — без бана: режем только торрент.</div>
+
+    <div class="field" id="tor-banned-wrap" hidden>
+      <div class="field-head"><span>Сейчас в бане</span></div>
+      <div id="tor-banned"></div>
     </div>
 
     <div class="field">

@@ -111,8 +111,9 @@ docker run -d --name awg-agent \
 
 | Метод | Путь | Что |
 |---|---|---|
-| `GET` `PUT` | `/api/torrent` | конфиг блокировщика: `enabled` (вкл/выкл nft сразу), `webhook_url`/`webhook_secret`, `node_name`, `block_duration`. Секрет наружу не отдаётся — только `webhookSecretSet` |
+| `GET` `PUT` | `/api/torrent` | конфиг блокировщика: `enabled` (вкл/выкл nft сразу), `webhook_url`/`webhook_secret`, `node_name`, `block_duration` — бан за торрент, сек (0 — без бана). В ответе GET ещё `banned` (кто в бане и сколько осталось) и `nftAvailable`. Секрет наружу не отдаётся — только `webhookSecretSet` |
 | `PUT` | `/api/wireguard/client/{key}/torrent` | исключить клиента из блокировки: `{"exempt": true}` |
+| `POST` | `/api/wireguard/client/{key}/unban` | снять бан за торрент досрочно |
 | `PUT` | `/api/wireguard/client/{key}/contact` | контакты для отчётов: `{"telegram_id": "…", "email": "…"}` |
 | `PUT` | `/api/wireguard/client/{key}/log` | хранить персональный лог: `{"enabled": true}` |
 | `GET` | `/api/wireguard/client/{key}/log?limit=N` | хвост лога (свежие сверху) + `logEnabled` + `sizeBytes` |
@@ -121,6 +122,14 @@ docker run -d --name awg-agent \
 Глобально включить блокировщик — `PUT /api/torrent {"enabled": true}`,
 выключить — `false` (nft-таблица снимается сразу). Отчёты о торренте
 уходят вебхуком в формате Remnawave — см. [WEBHOOKS.md](WEBHOOKS.md).
+
+**Бан за торрент** — как в Remnawave: поймали на торренте, и клиент на
+`block_duration` секунд теряет весь доступ (трафик режется в обе стороны),
+снять досрочно — `POST …/unban`. 0 — без бана, режутся только
+торрент-пакеты. Бан — по адресу клиента в туннеле, а не по внешнему:
+внешний у мобильных операторов общий на сотни людей (CGNAT) и меняется со
+сменой сети. Правила — в таблице `inet`: торрент ловится и по IPv6 (у
+клиента ULA-адрес, при глобальном v6 у хоста трафик уходит через NAT66).
 
 **Персональные логи** (по галочке на клиенте) пишутся пофайлово в JSONL
 (`<WG_PATH>/user-logs/<id>.log`): сессии подключений, торрент-хиты и срезы
@@ -136,13 +145,13 @@ docker run -d --name awg-agent \
 
 ```bash
 # разведать (ничего не меняет)
-curl -fsSL https://raw.githubusercontent.com/forestsnet/awg-agent/main/migrate-from-wg-easy.sh | sudo bash -s -- --dry-run
+curl -fsSL https://raw.githubusercontent.com/forestsnet/awg-agent/HEAD/migrate-from-wg-easy.sh | sudo bash -s -- --dry-run
 
 # мигрировать
-curl -fsSL https://raw.githubusercontent.com/forestsnet/awg-agent/main/migrate-from-wg-easy.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/forestsnet/awg-agent/HEAD/migrate-from-wg-easy.sh | sudo bash
 
 # откат на amnezia-wg-easy
-curl -fsSL https://raw.githubusercontent.com/forestsnet/awg-agent/main/migrate-from-wg-easy.sh | sudo bash -s -- --rollback
+curl -fsSL https://raw.githubusercontent.com/forestsnet/awg-agent/HEAD/migrate-from-wg-easy.sh | sudo bash -s -- --rollback
 ```
 
 Скрипт сам находит старый контейнер, переносит его окружение (имена переменных совпадают) и `wg0.json`, останавливает панель (не удаляя — для мгновенного отката), поднимает агент, проверяет `/api/health` и при сбое откатывается сам. Детали и ручная процедура — [MIGRATION.md](MIGRATION.md).
@@ -228,7 +237,7 @@ HTB по адресу назначения, отдача — policer'ом на i
 | `TORRENT_WEBHOOK_URL` | — | Куда слать отчёты о торренте (пусто — только дроп) |
 | `TORRENT_WEBHOOK_SECRET` | — | Секрет HMAC для подписи отчётов |
 | `TORRENT_NODE_NAME` | `= WG_HOST` | Имя ноды в отчёте |
-| `TORRENT_BLOCK_DURATION` | `3600` | Кулдаун/таймаут бана в отчёте, сек |
+| `TORRENT_BLOCK_DURATION` | `3600` | Бан за торрент, сек (0 — без бана, только дроп торрента). Дальше правится по API |
 | `USERLOG_MAX_BYTES` | `5242880` | Порог ротации персонального лога (5 МБ) |
 | `USERLOG_KEEP` | `5` | Сколько сжатых поколений лога хранить |
 | `USERLOG_SNAPSHOT_SECONDS` | `900` | Как часто писать срез трафика в лог |

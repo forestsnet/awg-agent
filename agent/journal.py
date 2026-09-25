@@ -35,6 +35,7 @@ KIND_DELETED = "deleted"
 KIND_ENABLED = "enabled"
 KIND_DISABLED = "disabled"
 KIND_TORRENT = "torrent"
+KIND_TORRENT_UNBAN = "torrent_unban"
 
 
 def _iso(value: datetime) -> str:

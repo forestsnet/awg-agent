@@ -634,6 +634,78 @@ def main() -> None:
         check("это действительно svg",
               data.lstrip()[:4] == b"<?xm" or b"<svg" in data[:200])
 
+    print(f"\n{B}12. Торрент-блокировщик{N}")
+    # Живая проверка правил на ядре — в контейнере с nftables (сводка
+    # сессии 25.09); здесь — то, что видно без ядра.
+    from datetime import datetime as _dt
+    from agent import torrent as tb
+
+    with open(os.path.join(ROOT, "Dockerfile"), encoding="utf-8") as fh:
+        docker = fh.read()
+    # Без утилиты nft блокировщик не поднимался вовсе: в базе только iptables.
+    check("в образе есть nftables", "nftables" in docker.split("apk add", 1)[-1].split("\n", 1)[0])
+
+    rs_ban = tb.ruleset(600)
+    rs_none = tb.ruleset(0)
+    check("таблица inet — ловит и v4, и v6",
+          "table inet btguard {" in rs_ban and "meta nfproto ipv6" in rs_ban and "@offenders6" in rs_ban)
+    check("бан: торрент кладёт клиента в banned на срок",
+          "update @banned4 { ip saddr timeout 600s }" in rs_ban
+          and "update @banned6 { ip6 saddr timeout 600s }" in rs_ban)
+    check("бан режет весь трафик в обе стороны",
+          'ip saddr @banned4 counter name "banned" drop' in rs_ban and "ip daddr @banned4 drop" in rs_ban
+          and "ip6 daddr @banned6 drop" in rs_ban)
+    check("исключение — раньше бана",
+          rs_ban.index("ip saddr @exempt4 return") < rs_ban.index("ip saddr @banned4"))
+    check("срок 0 — без бана, только дроп торрента",
+          "update @banned" not in rs_none and "update @offenders4" in rs_none)
+    check("set'ы, которые пополняются из правил, — dynamic",
+          "set banned4 { type ipv4_addr; flags dynamic,timeout; }" in rs_ban)
+    check("срок бана: отрицательный — 0, больше месяца — месяц",
+          tb.ban_seconds({"block_duration": -5}) == 0
+          and tb.ban_seconds({"block_duration": 10**9}) == tb.MAX_BAN_SECONDS
+          and tb.ban_seconds({}) == 0)
+
+    cl = {"id": "c1", "name": "iphone", "address": "10.8.0.5/32"}
+    ips = tb.client_ips(cl)
+    check("адреса клиента: v4 и v6-зеркало", ips[0] == "10.8.0.5" and len(ips) == 2 and ips[1].endswith("::5"),
+          str(ips))
+    check("отчёт по v6-адресу находит того же клиента", tb._by_ip([cl]).get(ips[1]) is cl)
+
+    rep = tb._report({"block_duration": 600, "node_name": "n1"}, cl, "10.8.0.5")["data"]["report"]["actionReport"]
+    at = _dt.fromisoformat(rep["processedAt"].replace("Z", "+00:00"))
+    unblock = _dt.fromisoformat(rep["willUnblockAt"].replace("Z", "+00:00"))
+    check("отчёт: срок бана и время разблокировки",
+          rep["blockDuration"] == 600 and int((unblock - at).total_seconds()) == 600)
+    rep0 = tb._report({"block_duration": 0}, cl, "10.8.0.5")["data"]["report"]["actionReport"]
+    check("отчёт без бана: срок 0, разблокировки нет",
+          rep0["blockDuration"] == 0 and rep0["willUnblockAt"] is None, str(rep0))
+
+    listing = """table inet btguard {
+	set banned4 {
+		type ipv4_addr
+		size 65535
+		flags dynamic,timeout
+		elements = { 10.8.0.5 timeout 10m expires 9m58s780ms,
+			     10.8.0.7 timeout 1h expires 1h2s }
+	}
+}"""
+    check("разбор set: адреса", tb._elements(listing) == {"10.8.0.5", "10.8.0.7"}, str(tb._elements(listing)))
+    check("разбор сроков nft", tb._seconds("9m58s780ms") == 598 and tb._seconds("1h2s") == 3602
+          and tb._seconds("2d") == 172800, f"{tb._seconds('9m58s780ms')} {tb._seconds('1h2s')}")
+
+    src = open(os.path.join(ROOT, "agent", "torrent.py"), encoding="utf-8").read()
+    check("вебхук шлётся в отдельном потоке — агент не встаёт на 30 с",
+          "await asyncio.to_thread(_send, cfg, _report(cfg, client, ip))" in src)
+    check("без nft ручки не падают", "except FileNotFoundError:" in src)
+    # apply() зовётся на каждое изменение клиентов: пересборка таблицы обнуляла бы баны.
+    check("таблица пересобирается только при смене правил, баны переживают пересборку",
+          "if rules != _applied_rules or not await loaded():" in src
+          and "kept = await banned()" in src)
+    main_src = open(os.path.join(ROOT, "agent", "main.py"), encoding="utf-8").read()
+    check("обновление ищется в ветке по умолчанию (HEAD), а не в несуществующей main",
+          "/commits/HEAD" in main_src and "/commits/main" not in main_src)
+
     if failures:
         print(f"\n{R}Провалено: {len(failures)}{N}")
         for f in failures:
