@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import (REPO_URL, __build__, __version__, auth, awg, config,
-               journal, net, quota, render, shaper, upstream, zones)
+               journal, net, quota, render, shaper, torrent, upstream, zones)
 from .state import store
 
 logging.basicConfig(
@@ -47,6 +47,26 @@ class SessionIn(BaseModel):
 
 class ClientIn(BaseModel):
     name: str = Field(default="", max_length=120)
+    # Опционально: контакты для отчётов торрент-блокировщика.
+    telegram_id: Optional[str] = Field(default=None, max_length=64)
+    email: Optional[str] = Field(default=None, max_length=254)
+
+
+class ContactIn(BaseModel):
+    telegram_id: Optional[str] = Field(default=None, max_length=64)
+    email: Optional[str] = Field(default=None, max_length=254)
+
+
+class TorrentExemptIn(BaseModel):
+    exempt: bool = False
+
+
+class TorrentConfigIn(BaseModel):
+    enabled: Optional[bool] = None
+    webhook_url: Optional[str] = Field(default=None, max_length=2048)
+    webhook_secret: Optional[str] = Field(default=None, max_length=512)
+    node_name: Optional[str] = Field(default=None, max_length=120)
+    block_duration: Optional[int] = Field(default=None, ge=0)
 
 
 class QuotaIn(BaseModel):
@@ -145,6 +165,7 @@ async def _startup() -> None:
     # опущенными — до первой правки в панели.
     await store.reapply()
     asyncio.create_task(_quota_loop())
+    asyncio.create_task(torrent.watch(store))
 
 
 async def _quota_loop() -> None:
@@ -231,6 +252,9 @@ def _out(client: dict[str, Any], stats: dict[str, Any]) -> dict[str, Any]:
         "disabledReason": client.get("disabled_reason"),
         "rateBps": int(client.get("rate_bps") or 0),
         "zoneId": client.get("zone_id"),
+        "telegramId": client.get("telegram_id"),
+        "email": client.get("email"),
+        "torrentExempt": bool(client.get("torrent_exempt", False)),
     }
 
 
@@ -256,7 +280,7 @@ async def client_create(payload: ClientIn) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Имя не задано")
     if any(c["name"] == name for c in store.clients):
         raise HTTPException(status_code=400, detail="Клиент с таким именем уже есть")
-    client = await store.create(name)
+    client = await store.create(name, telegram_id=payload.telegram_id, email=payload.email)
     logger.info("клиент создан: %s (%s)", name, client["address"])
     return _out(client, await awg.peer_stats(force=True))
 
@@ -452,6 +476,45 @@ async def client_qr(key: str) -> Response:
 # обслуживает несколько зон (IPMI отдельно, management отдельно), а
 # зона вполне может жить и без туннеля — на сетях, которые сервер видит
 # и так.
+
+
+@app.put("/api/wireguard/client/{key}/contact", dependencies=[Depends(_authed)])
+async def client_contact(key: str, payload: ContactIn) -> dict[str, Any]:
+    if not await store.set_contact(key, payload.telegram_id, payload.email):
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    return {"success": True}
+
+
+@app.put("/api/wireguard/client/{key}/torrent", dependencies=[Depends(_authed)])
+async def client_torrent(key: str, payload: TorrentExemptIn) -> dict[str, Any]:
+    if not await store.set_torrent_exempt(key, payload.exempt):
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    return {"success": True}
+
+
+@app.get("/api/torrent", dependencies=[Depends(_authed)])
+async def torrent_get() -> dict[str, Any]:
+    cfg = store.torrent or {}
+    return {
+        "enabled": bool(cfg.get("enabled", True)),
+        "webhookUrl": cfg.get("webhook_url") or "",
+        # Секрет наружу не отдаём — только факт, что он задан.
+        "webhookSecretSet": bool(cfg.get("webhook_secret")),
+        "webhookConfigured": torrent.configured(cfg),
+        "nodeName": cfg.get("node_name") or "",
+        "blockDuration": int(cfg.get("block_duration") or 3600),
+        "active": await torrent.loaded(),
+        "counters": await torrent.counters(),
+        "exemptCount": sum(1 for c in store.clients if c.get("torrent_exempt")),
+    }
+
+
+@app.put("/api/torrent", dependencies=[Depends(_authed)])
+async def torrent_set(payload: TorrentConfigIn) -> dict[str, Any]:
+    patch = {k: v for k, v in payload.model_dump().items() if v is not None}
+    cfg = await store.set_torrent_config(patch)
+    return {"success": True, "webhookConfigured": torrent.configured(cfg),
+            "active": await torrent.loaded()}
 
 
 @app.get("/api/zones", dependencies=[Depends(_authed)])
@@ -729,6 +792,72 @@ async def release() -> dict[str, Any]:
         "repo": REPO_URL,
         "agent": "forestsnet/awg-agent",
     }
+
+
+def _has(binary: str) -> bool:
+    from shutil import which
+    return which(binary) is not None
+
+
+async def _latest_build() -> Optional[str]:
+    """Короткий sha последнего коммита main в репозитории агента (через GitHub API)."""
+    import json as _json
+    import urllib.request
+
+    def fetch() -> str:
+        req = urllib.request.Request(
+            "https://api.github.com/repos/forestsnet/awg-agent/commits/main",
+            headers={"User-Agent": "awg-agent", "Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return (_json.load(resp).get("sha") or "")[:7]
+
+    try:
+        return await asyncio.to_thread(fetch)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+@app.get("/api/update", dependencies=[Depends(_authed)])
+async def update_check() -> dict[str, Any]:
+    """Есть ли новая версия. Сравниваем sha сборки с последним коммитом main."""
+    latest = await _latest_build()
+    available = bool(latest and __build__ not in ("dev", "") and latest != __build__)
+    return {"current": __build__, "version": __version__, "latest": latest,
+            "updateAvailable": available}
+
+
+@app.post("/api/update", dependencies=[Depends(_authed)])
+async def update_apply() -> dict[str, Any]:
+    """Обновиться. Агент в контейнере: сам себя пересоздать может только через docker.sock.
+
+    Сокет проброшен — тянем свежий образ и пересоздаём контейнер отдельным процессом
+    (сам агент при этом перезапустится). Сокета нет — отдаём команду для хоста.
+    """
+    latest = await _latest_build()
+    image = "ghcr.io/forestsnet/awg-agent:latest"
+    host_cmd = "docker compose pull && docker compose up -d"
+    have_sock = os.path.exists("/var/run/docker.sock") and _has("docker")
+    if not have_sock:
+        # Пересоздать себя с верным конфигом (env/volumes/caps/ports) агент изнутри не может —
+        # это делает docker compose на хосте. Наивный docker run потерял бы PASSWORD_HASH и стейт.
+        return {"applied": False, "pulled": False, "latest": latest, "hint": host_cmd,
+                "detail": ("Пересоздание контейнера делается на хосте. Пробросьте /var/run/docker.sock, "
+                           "чтобы агент хотя бы предзагружал образ, либо запустите команду из hint. "
+                           "Проще всего — cron на хосте: " + host_cmd)}
+    try:
+        pull = await asyncio.create_subprocess_exec(
+            "docker", "pull", image,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        out, _ = await pull.communicate()
+        ok = pull.returncode == 0
+        # Сознательно НЕ пересоздаём контейнер сами: без исходного compose это сломало бы конфиг.
+        return {"applied": False, "pulled": ok, "latest": latest, "hint": host_cmd,
+                "detail": (("Свежий образ загружен. " if ok else "docker pull не удался. ")
+                           + "Примените пересозданием на хосте: " + host_cmd),
+                "pullLog": out.decode(errors="replace")[-400:] if not ok else None}
+    except Exception as e:  # noqa: BLE001
+        return {"applied": False, "reason": str(e), "hint": host_cmd}
 
 
 @app.exception_handler(HTTPException)

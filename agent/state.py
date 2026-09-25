@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-from . import awg, config, journal, proto, quota, render, shaper, upstream, zones
+from . import awg, config, journal, proto, quota, render, shaper, torrent, upstream, zones
 
 logger = logging.getLogger("state")
 
@@ -53,6 +53,8 @@ class Store:
         # рукопожатие» отвечает только на «сейчас он тут?», а для
         # служебного доступа нужна история.
         self.events: list[dict[str, Any]] = []
+        # Конфиг торрент-блокировщика: webhook_url/secret, node_name, block_duration, enabled.
+        self.torrent: dict[str, Any] = {}
         self._lock = asyncio.Lock()
 
     # ── Загрузка ────────────────────────────────────────────────────
@@ -67,11 +69,17 @@ class Store:
             self.zones = data.get("zones") or []
             self.upstreams = data.get("upstreams") or []
             self.events = data.get("events") or []
+            self.torrent = data.get("torrent") or {}
             logger.info("состояние загружено: клиентов %d", len(self.clients))
         elif os.path.exists(config.LEGACY_STATE_PATH):
             await self._import_legacy()
         if not self.server:
             await self._init_server()
+        self._seed_torrent()
+        for c in self.clients:
+            c.setdefault("telegram_id", None)
+            c.setdefault("email", None)
+            c.setdefault("torrent_exempt", False)
         # Конфиг интерфейса пересобираем на каждом старте. Он собран из
         # состояния и окружения, а они между запусками меняются: агент
         # переехал в новый контейнер — сменился интерфейс для NAT,
@@ -133,6 +141,9 @@ class Store:
                 "i1": proto.signature_packet(),
                 "created_at": item.get("createdAt") or _now(),
                 "updated_at": _now(),
+                "telegram_id": None,
+                "email": None,
+                "torrent_exempt": False,
                 # Лимитов у старой панели не было — заводим пустые.
                 "quota_bytes": 0,
                 "quota_period": "none",
@@ -162,6 +173,7 @@ class Store:
                 "zones": self.zones,
                 "upstreams": self.upstreams,
                 "events": self.events,
+                "torrent": self.torrent,
             },
             ensure_ascii=False,
             indent=1,
@@ -211,6 +223,15 @@ class Store:
             await zones.apply(self.clients, self.zones, self.upstreams)
         except Exception:  # noqa: BLE001
             logger.exception("зоны не применились")
+        # Торрент-блокировщик: nft-дроп + set исключений. Отдельная таблица, зон и шейпера
+        # не касается. Выключен в конфиге — снимаем, чтобы не блокировал после отключения.
+        try:
+            if self.torrent.get("enabled", True):
+                await torrent.apply(self.clients)
+            else:
+                await torrent.teardown()
+        except Exception:  # noqa: BLE001
+            logger.exception("btguard не применился")
 
     # ── Резервная копия ─────────────────────────────────────────────
 
@@ -295,7 +316,8 @@ class Store:
                 return client
         return None
 
-    async def create(self, name: str) -> dict[str, Any]:
+    async def create(self, name: str, telegram_id: Optional[str] = None,
+                     email: Optional[str] = None) -> dict[str, Any]:
         async with self._lock:
             private, public = await awg.keypair()
             client = {
@@ -311,6 +333,11 @@ class Store:
                 "i1": proto.signature_packet() if config.IS_AWG else None,
                 "created_at": _now(),
                 "updated_at": _now(),
+                # Контакты для отчётов торрент-блокировщика (опционально).
+                "telegram_id": (str(telegram_id).strip() or None) if telegram_id else None,
+                "email": (str(email).strip() or None) if email else None,
+                # Исключение из торрент-блокировщика: True — клиенту торрент разрешён.
+                "torrent_exempt": False,
                 # Лимиты: 0 — без лимита, период сброса «none».
                 "quota_bytes": 0,
                 "quota_period": "none",
@@ -563,6 +590,63 @@ class Store:
             client["updated_at"] = _now()
             await self.apply()
             return True
+
+    # ── Торрент-блокировщик ──────────────────────────────────────────
+
+    def _seed_torrent(self) -> None:
+        """Заполнить недостающие поля конфига торрента из окружения (стартовые сиды)."""
+        defaults = {
+            "enabled": config.TORRENT_ENABLED,
+            "webhook_url": config.TORRENT_WEBHOOK_URL,
+            "webhook_secret": config.TORRENT_WEBHOOK_SECRET,
+            "node_name": config.TORRENT_NODE_NAME or config.WG_HOST or "awg-agent",
+            "block_duration": config.TORRENT_BLOCK_DURATION,
+        }
+        for k, v in defaults.items():
+            self.torrent.setdefault(k, v)
+
+    async def set_contact(self, key: str, telegram_id: Optional[str],
+                          email: Optional[str]) -> bool:
+        async with self._lock:
+            client = self.find(key)
+            if not client:
+                return False
+            client["telegram_id"] = (str(telegram_id).strip() or None) if telegram_id else None
+            client["email"] = (str(email).strip() or None) if email else None
+            client["updated_at"] = _now()
+            await self.persist_state()
+            return True
+
+    async def set_torrent_exempt(self, key: str, exempt: bool) -> bool:
+        async with self._lock:
+            client = self.find(key)
+            if not client:
+                return False
+            client["torrent_exempt"] = bool(exempt)
+            client["updated_at"] = _now()
+            await self.persist_state()
+            try:
+                await torrent.sync_exempt(self.clients)
+            except Exception:  # noqa: BLE001
+                logger.exception("btguard: исключение не применилось")
+            return True
+
+    async def set_torrent_config(self, patch: dict[str, Any]) -> dict[str, Any]:
+        async with self._lock:
+            cfg = dict(self.torrent)
+            for k in ("enabled", "webhook_url", "webhook_secret", "node_name", "block_duration"):
+                if k in patch and patch[k] is not None:
+                    cfg[k] = patch[k]
+            self.torrent = cfg
+            await self.persist_state()
+        # Вне лока: reapply поднимет или снимет btguard по флагу enabled.
+        await self.reapply()
+        return self.torrent
+
+    async def record_torrent(self, client: dict[str, Any], ip: str) -> None:
+        async with self._lock:
+            journal.record(self.events, journal.KIND_TORRENT, client)
+            await self.persist_state()
 
     # ── Учёт трафика и применение лимитов ───────────────────────────
 

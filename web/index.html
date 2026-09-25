@@ -50,6 +50,7 @@
       </label>
       <button id="add-btn" class="primary"><span data-icon="plus" data-size="18"></span>Добавить</button>
       <button id="backup-btn" class="icon" title="Скачать резервную копию (ключи сервера и клиентов)"><span data-icon="archive" data-size="18"></span></button>
+      <button id="torrent-btn" class="icon" title="Торрент-блокировщик"><span data-icon="magnet" data-size="18"></span></button>
       <button id="theme-btn" class="icon" title="Тема"></button>
       <button id="logout-btn" class="icon" title="Выйти"><span data-icon="logout" data-size="18"></span></button>
     </div>
@@ -112,6 +113,14 @@
       Имя устройства
       <input id="create-name" placeholder="iphone-artem" maxlength="120" required>
     </label>
+    <label class="field">
+      Telegram ID <span class="muted">— опционально, для отчётов</span>
+      <input id="create-tg" placeholder="123456789" maxlength="64" inputmode="numeric">
+    </label>
+    <label class="field">
+      Email <span class="muted">— опционально</span>
+      <input id="create-email" type="email" placeholder="user@example.com" maxlength="254">
+    </label>
     <div class="modal-foot">
       <button type="button" class="secondary" data-close>Отмена</button>
       <button type="submit" class="primary">Создать</button>
@@ -169,6 +178,23 @@
       <input id="limit-expires" type="date">
     </div>
 
+    <div class="field">
+      <div class="field-head">
+        <span>Торрент</span>
+        <label class="switch"><input type="checkbox" id="limit-torrent-exempt"><span>Разрешить (исключение)</span></label>
+      </div>
+      <div class="muted" style="font-size:13px">Обычно торрент режется. Включи, чтобы этому клиенту разрешить.</div>
+    </div>
+
+    <label class="field">
+      Telegram ID <span class="muted">— для отчётов</span>
+      <input id="limit-tg" placeholder="123456789" maxlength="64" inputmode="numeric">
+    </label>
+    <label class="field">
+      Email
+      <input id="limit-email" type="email" placeholder="user@example.com" maxlength="254">
+    </label>
+
     <div class="modal-foot">
       <button type="button" class="secondary" id="limit-reset">Обнулить счётчик</button>
       <button type="submit" class="primary">Сохранить</button>
@@ -216,6 +242,53 @@
       <button class="danger" id="confirm-ok">Удалить</button>
     </div>
   </div>
+</div>
+
+<div id="torrent-modal" class="modal hidden">
+  <form class="modal-card" id="torrent-form">
+    <div class="modal-head"><b>Торрент-блокировщик</b>
+      <button type="button" class="icon" data-close><span data-icon="close" data-size="16"></span></button></div>
+
+    <div class="field">
+      <div class="field-head">
+        <span>Блокировка (btguard)</span>
+        <label class="switch"><input type="checkbox" id="tor-enabled"><span>Включена</span></label>
+      </div>
+      <div class="muted" id="tor-status" style="font-size:13px">—</div>
+    </div>
+
+    <label class="field">
+      Webhook URL <span class="muted">— куда слать отчёты (формат Remnawave)</span>
+      <input id="tor-url" placeholder="https://bot.example.com/webhook/torrent" maxlength="2048">
+    </label>
+    <label class="field">
+      Webhook secret <span class="muted" id="tor-secret-set"></span>
+      <input id="tor-secret" type="password" placeholder="секрет для подписи (HMAC-SHA256)" maxlength="512" autocomplete="new-password">
+    </label>
+    <div class="pair">
+      <label class="field" style="flex:1">
+        Имя ноды в отчёте
+        <input id="tor-node" placeholder="awg-de-1" maxlength="120">
+      </label>
+      <label class="field" style="width:130px">
+        Блок, сек
+        <input id="tor-dur" type="number" min="0" step="60" placeholder="3600">
+      </label>
+    </div>
+
+    <div class="field">
+      <div class="field-head">
+        <span>Обновление агента</span>
+        <button type="button" class="secondary" id="tor-update">Проверить</button>
+      </div>
+      <div class="muted" id="tor-update-status" style="font-size:13px">—</div>
+    </div>
+
+    <div class="modal-foot">
+      <button type="button" class="secondary" data-close>Закрыть</button>
+      <button type="submit" class="primary">Сохранить</button>
+    </div>
+  </form>
 </div>
 
 <div id="toasts" class="toasts"></div>

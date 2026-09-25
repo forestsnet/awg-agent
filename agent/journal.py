@@ -34,6 +34,7 @@ KIND_CREATED = "created"
 KIND_DELETED = "deleted"
 KIND_ENABLED = "enabled"
 KIND_DISABLED = "disabled"
+KIND_TORRENT = "torrent"
 
 
 def _iso(value: datetime) -> str:

@@ -125,3 +125,12 @@ STATE_PATH = os.path.join(WG_PATH, "clients.json")
 # Файл состояния amnezia-wg-easy: из него импортируем клиентов при
 # первом старте, чтобы подмена контейнера никого не отключила.
 LEGACY_STATE_PATH = os.path.join(WG_PATH, f"{WG_INTERFACE}.json")
+
+
+# ── Торрент-блокировщик (btguard) ───────────────────────────────────
+# Значения — стартовые сиды. Дальше конфиг живёт в состоянии и правится по API/в панели.
+TORRENT_ENABLED = _flag("TORRENT_ENABLED", True)
+TORRENT_WEBHOOK_URL = os.environ.get("TORRENT_WEBHOOK_URL", "").strip()
+TORRENT_WEBHOOK_SECRET = os.environ.get("TORRENT_WEBHOOK_SECRET", "").strip()
+TORRENT_NODE_NAME = os.environ.get("TORRENT_NODE_NAME", "").strip()
+TORRENT_BLOCK_DURATION = _int("TORRENT_BLOCK_DURATION", 3600)

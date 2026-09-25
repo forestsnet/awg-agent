@@ -32,6 +32,7 @@ const ICONS = {
   gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
   archive: '<rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>',
   chart: '<path d="M3 3v16a2 2 0 0 0 2 2h16"/><rect x="7" y="13" width="3" height="5" rx="1"/><rect x="12" y="9" width="3" height="9" rx="1"/><rect x="17" y="5" width="3" height="13" rx="1"/>',
+  magnet: '<path d="m6 15-4-4 6.75-6.77a7.79 7.79 0 0 1 11 11L13 22l-4-4 6.39-6.36a2.14 2.14 0 0 0-3-3L6 15"/><path d="m5 8 4 4"/><path d="m12 15 4 4"/>',
 };
 
 const icon = (name, size = 18) =>
@@ -464,6 +465,9 @@ function openLimits(client) {
 
   $('expires-never').checked = !client.expiresAt;
   $('limit-expires').value = client.expiresAt ? client.expiresAt.slice(0, 10) : '';
+  $('limit-torrent-exempt').checked = !!client.torrentExempt;
+  $('limit-tg').value = client.telegramId || '';
+  $('limit-email').value = client.email || '';
   syncUnlimited();
   openModal('limits-modal');
   setTimeout(() => (client.quotaBytes ? $('limit-value') : $('limit-unlimited')).focus(), 40);
@@ -496,6 +500,17 @@ $('limits-form').addEventListener('submit', async (e) => {
     await api(`/api/wireguard/client/${limitsFor}/rate`, {
       method: 'PUT',
       body: JSON.stringify({ bps }),
+    });
+    await api(`/api/wireguard/client/${limitsFor}/contact`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        telegram_id: $('limit-tg').value.trim() || null,
+        email: $('limit-email').value.trim() || null,
+      }),
+    });
+    await api(`/api/wireguard/client/${limitsFor}/torrent`, {
+      method: 'PUT',
+      body: JSON.stringify({ exempt: $('limit-torrent-exempt').checked }),
     });
     closeModal('limits-modal');
     toast(bytes ? `Лимит ${fmtBytes(bytes)} ${PERIOD_LABEL[$('limit-period').value]}` : 'Без лимита');
@@ -583,6 +598,8 @@ document.addEventListener('keydown', (e) => {
 
 $('add-btn').addEventListener('click', () => {
   $('create-name').value = '';
+  $('create-tg').value = '';
+  $('create-email').value = '';
   openModal('create-modal');
   setTimeout(() => $('create-name').focus(), 40);
 });
@@ -591,12 +608,71 @@ $('create-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const name = $('create-name').value.trim();
   if (!name) return;
+  const body = { name };
+  const tg = $('create-tg').value.trim();
+  const email = $('create-email').value.trim();
+  if (tg) body.telegram_id = tg;
+  if (email) body.email = email;
   try {
-    await api('/api/wireguard/client', { method: 'POST', body: JSON.stringify({ name }) });
+    await api('/api/wireguard/client', { method: 'POST', body: JSON.stringify(body) });
     closeModal('create-modal');
     toast(`Клиент «${name}» создан`);
     await refresh();
   } catch (err) { toast(err.message, 'err'); }
+});
+
+async function openTorrent() {
+  try {
+    const t = await api('/api/torrent');
+    $('tor-enabled').checked = !!t.enabled;
+    $('tor-url').value = t.webhookUrl || '';
+    $('tor-secret').value = '';
+    $('tor-secret-set').textContent = t.webhookSecretSet
+      ? '— задан, оставьте пустым чтобы не менять' : '— не задан';
+    $('tor-node').value = t.nodeName || '';
+    $('tor-dur').value = t.blockDuration || 3600;
+    const c = t.counters || {};
+    const hits = (c.dht || 0) + (c.utp || 0) + (c.tracker || 0);
+    $('tor-status').textContent =
+      `${t.active ? 'активна' : 'не загружена'} · вебхук ${t.webhookConfigured ? 'настроен' : 'не настроен'}`
+      + ` · исключений ${t.exemptCount || 0} · дропов ${hits}`;
+    $('tor-update-status').textContent = '—';
+    openModal('torrent-modal');
+  } catch (err) { toast(err.message, 'err'); }
+}
+$('torrent-btn').addEventListener('click', openTorrent);
+
+$('torrent-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const body = {
+    enabled: $('tor-enabled').checked,
+    webhook_url: $('tor-url').value.trim(),
+    node_name: $('tor-node').value.trim(),
+    block_duration: parseInt($('tor-dur').value || '3600', 10),
+  };
+  const secret = $('tor-secret').value;
+  if (secret) body.webhook_secret = secret;   // пустой — не меняем
+  try {
+    const r = await api('/api/torrent', { method: 'PUT', body: JSON.stringify(body) });
+    closeModal('torrent-modal');
+    toast(r.webhookConfigured ? 'Сохранено, вебхук настроен' : 'Сохранено');
+  } catch (err) { toast(err.message, 'err'); }
+});
+
+$('tor-update').addEventListener('click', async () => {
+  $('tor-update-status').textContent = 'Проверяю…';
+  try {
+    const u = await api('/api/update');
+    if (!u.updateAvailable) {
+      $('tor-update-status').textContent = `Актуально (сборка ${u.current})`;
+      return;
+    }
+    $('tor-update-status').textContent = `Есть обновление ${u.current} → ${u.latest}, применяю…`;
+    const r = await api('/api/update', { method: 'POST' });
+    $('tor-update-status').textContent = r.applied
+      ? 'Обновлено, агент перезапускается'
+      : (r.detail || r.hint || 'Пересоздайте контейнер на хосте');
+  } catch (err) { $('tor-update-status').textContent = err.message; }
 });
 
 function askConfirm(title, text, okText, onOk) {
