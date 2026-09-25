@@ -164,4 +164,4 @@ fi
 GOT=$(printf '%s' "$ok" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("clients","?"))' 2>/dev/null || echo '?')
 say "agent жив: клиентов $GOT (в старой панели было $NCLIENTS)"
 [ "$GOT" = "$NCLIENTS" ] && say "✅ число клиентов совпало" || say "⚠ число клиентов отличается — проверь логи"
-say "готово. Откат при необходимости: sudo $0 --rollback"
+say "готово. Откат: повторить запуск с --rollback (см. README/MIGRATION.md)"
