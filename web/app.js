@@ -468,6 +468,7 @@ function openLimits(client) {
   $('expires-never').checked = !client.expiresAt;
   $('limit-expires').value = client.expiresAt ? client.expiresAt.slice(0, 10) : '';
   $('limit-torrent-exempt').checked = !!client.torrentExempt;
+  $('limit-torrent-noban').checked = !!client.torrentNoBan;
   $('limit-log-enabled').checked = !!client.logEnabled;
   logCtx = { id: client.id, name: client.name };
   $('limit-tg').value = client.telegramId || '';
@@ -514,7 +515,10 @@ $('limits-form').addEventListener('submit', async (e) => {
     });
     await api(`/api/wireguard/client/${limitsFor}/torrent`, {
       method: 'PUT',
-      body: JSON.stringify({ exempt: $('limit-torrent-exempt').checked }),
+      body: JSON.stringify({
+        exempt: $('limit-torrent-exempt').checked,
+        noban: $('limit-torrent-noban').checked,
+      }),
     });
     await api(`/api/wireguard/client/${limitsFor}/log`, {
       method: 'PUT',

@@ -5,6 +5,8 @@
 
 Поверх дропа:
   * исключение — клиентам из set `exempt` торрент разрешён (их адреса добавляются в set);
+  * «без бана» — клиентам из set `noban` торрент режется и попадает в отчёт, но бана нет
+    (срок бана задан на сервер, выключить его можно точечно — клиенту);
   * бан — как в Remnawave: поймали на торренте, и клиент на `block_duration` секунд целиком
     теряет доступ (set `banned`, трафик режется в обе стороны). 0 — без бана, режем только
     торрент-пакеты;
@@ -81,6 +83,7 @@ def ruleset(ban: int) -> str:
     for _, _, n, etype in _FAMILIES:
         out += [
             f"    set exempt{n} {{ type {etype}; flags interval; }}",
+            f"    set noban{n} {{ type {etype}; flags interval; }}",
             f"    set offenders{n} {{ type {etype}; flags dynamic,timeout; }}",
             f"    set banned{n} {{ type {etype}; flags dynamic,timeout; }}",
         ]
@@ -101,6 +104,12 @@ def ruleset(ban: int) -> str:
         for name, sig in _SIGNATURES:
             upd = f"update @offenders{n} {{ {fam} saddr timeout {OFFENDER_TIMEOUT}s }}"
             if ban:
+                # «Без бана» у клиента: пакет режем и учитываем для отчёта, но в banned не кладём.
+                # Правило раньше общего — первый drop заканчивает разбор.
+                out.append(
+                    f"        meta nfproto {proto} {fam} saddr @noban{n} meta l4proto udp {sig} "
+                    f'{upd} counter name "{name}" drop'
+                )
                 upd += f" update @banned{n} {{ {fam} saddr timeout {ban}s }}"
             out.append(
                 f'        meta nfproto {proto} meta l4proto udp {sig} {upd} counter name "{name}" drop'
@@ -225,25 +234,34 @@ async def _set_elements(name: str) -> set[str]:
 
 
 async def sync_exempt(clients: list[dict[str, Any]]) -> None:
-    """Привести exempt в соответствие клиентам с torrent_exempt=True. Исключённых — из бана."""
+    """Привести set'ы exempt и noban в соответствие флагам клиентов.
+
+    Исключённым и «без бана» — снять действующий бан: флаг ставят как раз затем,
+    чтобы человек не сидел без связи.
+    """
     if not await loaded():
         return
-    want: dict[str, set[str]] = {"4": set(), "6": set()}
-    for c in clients:
-        if c.get("torrent_exempt"):
-            for ip in client_ips(c):
-                want[_family(ip)].add(ip)
     changed = False
-    for n in ("4", "6"):
-        have = await _set_elements(f"exempt{n}")
-        for ip in want[n] - have:
-            await _nft("add", "element", "inet", TABLE, f"exempt{n}", "{ %s }" % ip)
-            await _nft("delete", "element", "inet", TABLE, f"banned{n}", "{ %s }" % ip)
-        for ip in have - want[n]:
-            await _nft("delete", "element", "inet", TABLE, f"exempt{n}", "{ %s }" % ip)
-        changed = changed or want[n] != have
+    for setname, flag in (("exempt", "torrent_exempt"), ("noban", "torrent_noban")):
+        want: dict[str, set[str]] = {"4": set(), "6": set()}
+        for c in clients:
+            if c.get(flag):
+                for ip in client_ips(c):
+                    want[_family(ip)].add(ip)
+        for n in ("4", "6"):
+            have = await _set_elements(f"{setname}{n}")
+            for ip in want[n] - have:
+                await _nft("add", "element", "inet", TABLE, f"{setname}{n}", "{ %s }" % ip)
+                await _nft("delete", "element", "inet", TABLE, f"banned{n}", "{ %s }" % ip)
+            for ip in have - want[n]:
+                await _nft("delete", "element", "inet", TABLE, f"{setname}{n}", "{ %s }" % ip)
+            changed = changed or want[n] != have
     if changed:
-        logger.info("btguard: исключений %d", len(want["4"]))
+        logger.info(
+            "btguard: исключений %d, без бана %d",
+            sum(1 for c in clients if c.get("torrent_exempt")),
+            sum(1 for c in clients if c.get("torrent_noban")),
+        )
 
 
 async def teardown() -> None:
@@ -323,7 +341,9 @@ async def unban(client: dict[str, Any]) -> bool:
 
 def _report(cfg: dict[str, Any], client: dict[str, Any], addr: str) -> dict[str, Any]:
     ts = datetime.now(timezone.utc)
-    dur = ban_seconds(cfg)
+    # «Без бана» у клиента: правило noban не банит — и отчёт не должен
+    # обещать бан, иначе бот напишет человеку «доступ закрыт на час».
+    dur = 0 if client.get("torrent_noban") else ban_seconds(cfg)
     def iso(t): return t.isoformat().replace("+00:00", "Z")
     user_id = str(client.get("telegram_id") or client.get("id") or addr)
     return {

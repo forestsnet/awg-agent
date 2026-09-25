@@ -60,7 +60,10 @@ class ContactIn(BaseModel):
 
 
 class TorrentExemptIn(BaseModel):
-    exempt: bool = False
+    # None — не трогать: бот шлёт только то, что меняет оператор.
+    exempt: Optional[bool] = None
+    # «Без бана»: торрент режется и в отчёте, но клиента не банят.
+    noban: Optional[bool] = None
 
 
 class TorrentConfigIn(BaseModel):
@@ -262,6 +265,7 @@ def _out(client: dict[str, Any], stats: dict[str, Any]) -> dict[str, Any]:
         "telegramId": client.get("telegram_id"),
         "email": client.get("email"),
         "torrentExempt": bool(client.get("torrent_exempt", False)),
+        "torrentNoBan": bool(client.get("torrent_noban", False)),
         "logEnabled": bool(client.get("log_enabled", False)),
     }
 
@@ -384,6 +388,7 @@ async def client_usage(key: str, days: int = 30) -> dict[str, Any]:
         "disabledReason": client.get("disabled_reason"),
         # Торрент и лог — здесь же: боту иначе нужен весь список клиентов.
         "torrentExempt": bool(client.get("torrent_exempt", False)),
+        "torrentNoBan": bool(client.get("torrent_noban", False)),
         "logEnabled": bool(client.get("log_enabled", False)),
         "torrentBannedFor": await _banned_for(client),
     }
@@ -506,7 +511,7 @@ async def client_contact(key: str, payload: ContactIn) -> dict[str, Any]:
 
 @app.put("/api/wireguard/client/{key}/torrent", dependencies=[Depends(_authed)])
 async def client_torrent(key: str, payload: TorrentExemptIn) -> dict[str, Any]:
-    if not await store.set_torrent_exempt(key, payload.exempt):
+    if not await store.set_torrent_flags(key, exempt=payload.exempt, noban=payload.noban):
         raise HTTPException(status_code=404, detail="Клиент не найден")
     return {"success": True}
 

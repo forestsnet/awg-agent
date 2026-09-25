@@ -90,6 +90,7 @@ class Store:
             c.setdefault("telegram_id", None)
             c.setdefault("email", None)
             c.setdefault("torrent_exempt", False)
+            c.setdefault("torrent_noban", False)
             c.setdefault("log_enabled", False)
         # Конфиг интерфейса пересобираем на каждом старте. Он собран из
         # состояния и окружения, а они между запусками меняются: агент
@@ -700,11 +701,19 @@ class Store:
             return True
 
     async def set_torrent_exempt(self, key: str, exempt: bool) -> bool:
+        return await self.set_torrent_flags(key, exempt=exempt)
+
+    async def set_torrent_flags(self, key: str, *, exempt: Optional[bool] = None,
+                                noban: Optional[bool] = None) -> bool:
+        """Исключение из блокировки и «без бана» у клиента. None — не трогать."""
         async with self._lock:
             client = self.find(key)
             if not client:
                 return False
-            client["torrent_exempt"] = bool(exempt)
+            if exempt is not None:
+                client["torrent_exempt"] = bool(exempt)
+            if noban is not None:
+                client["torrent_noban"] = bool(noban)
             client["updated_at"] = _now()
             await self.persist_state()
             try:

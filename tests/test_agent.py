@@ -716,6 +716,15 @@ def main() -> None:
           rs_ban.index("ip saddr @exempt4 return") < rs_ban.index("ip saddr @banned4"))
     check("срок 0 — без бана, только дроп торрента",
           "update @banned" not in rs_none and "update @offenders4" in rs_none)
+    # «Без бана» у клиента: торрент режем и учитываем, но в banned не кладём — правило
+    # стоит раньше общего с баном (первый drop заканчивает разбор).
+    nb = rs_ban.index("ip saddr @noban4 meta l4proto udp")
+    check("«без бана»: своё правило без update @banned и раньше общего",
+          "set noban4 { type ipv4_addr; flags interval; }" in rs_ban
+          and "update @banned4" not in rs_ban[nb:rs_ban.index("\n", nb)]
+          and nb < rs_ban.index("update @banned4")
+          and "ip6 saddr @noban6" in rs_ban)
+    check("при сроке 0 правил «без бана» нет — незачем", "@noban4 meta" not in rs_none)
     check("set'ы, которые пополняются из правил, — dynamic",
           "set banned4 { type ipv4_addr; flags dynamic,timeout; }" in rs_ban)
     check("срок бана: отрицательный — 0, больше месяца — месяц",
@@ -737,6 +746,10 @@ def main() -> None:
     rep0 = tb._report({"block_duration": 0}, cl, "10.8.0.5")["data"]["report"]["actionReport"]
     check("отчёт без бана: срок 0, разблокировки нет",
           rep0["blockDuration"] == 0 and rep0["willUnblockAt"] is None, str(rep0))
+    repnb = tb._report({"block_duration": 600}, {**cl, "torrent_noban": True},
+                       "10.8.0.5")["data"]["report"]["actionReport"]
+    check("отчёт о клиенте «без бана»: срок 0 при общем 600",
+          repnb["blockDuration"] == 0 and repnb["willUnblockAt"] is None, str(repnb))
 
     listing = """table inet btguard {
 	set banned4 {
