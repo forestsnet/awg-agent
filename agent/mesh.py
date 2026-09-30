@@ -24,10 +24,9 @@ import asyncio
 import ipaddress
 import logging
 import os
-import tempfile
 from typing import Any, Optional
 
-from . import awg, config
+from . import awg, config, net
 
 logger = logging.getLogger("mesh")
 
@@ -78,72 +77,70 @@ def public(mesh: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _conf_path() -> str:
+    # wg-quick называет интерфейс по имени файла — кладём как awgmesh.conf.
+    return os.path.join(config.WG_PATH, f"{IFACE}.conf")
+
+
 async def down(mesh: Optional[dict[str, Any]] = None) -> None:
-    """Снять listener и свои правила. mesh нужен, чтобы убрать NAT по сети."""
-    await _run("iptables", "-D", "FORWARD", "-i", IFACE, "-j", "ACCEPT", quiet=True)
-    await _run("iptables", "-D", "FORWARD", "-o", IFACE, "-m", "state",
-               "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT", quiet=True)
-    net = _net((mesh or {}).get("address") or "")
-    dev = config.WG_DEVICE or "eth0"
-    if net:
-        await _run("iptables", "-t", "nat", "-D", "POSTROUTING", "-s", net,
-                   "-o", dev, "-j", "MASQUERADE", quiet=True)
+    """Снять listener. Правила и NAT уходят с ним (они в PostDown конфига)."""
+    await _run(config.BIN_QUICK, "down", _conf_path(), quiet=True)
     await _run("ip", "link", "del", IFACE, quiet=True)
 
 
 async def apply(mesh: dict[str, Any], upstreams: list[dict[str, Any]]) -> None:
-    """Поднять/пересобрать mesh-listener под текущих пиров."""
+    """Поднять/пересобрать mesh-listener под текущих пиров.
+
+    Поднимаем через wg-quick (как апстримы): в образе wg-интерфейсы идут
+    через userspace-fallback, голый `ip link add type wireguard` там даёт
+    «Protocol not supported». Маршруты не трогаем (Table = off), NAT в
+    интернет и форвардинг вешаем в PostUp; до ресурсов SNAT уже стоит на
+    их апстрим-интерфейсах.
+    """
     peers = [p for p in (mesh or {}).get("peers") or [] if p.get("public_key")]
     address = (mesh or {}).get("address")
     if not peers or not address or not mesh.get("private_key"):
         await down(mesh)
         return
 
-    net = _net(address)
-    dev = config.WG_DEVICE or "eth0"
-    await down(mesh)
-
-    ok, err = await _run("ip", "link", "add", IFACE, "type", "wireguard")
-    if not ok:
-        logger.error("mesh: интерфейс не создан: %s", err)
-        return
-
-    lines = ["[Interface]",
-             f"PrivateKey = {mesh['private_key']}",
-             f"ListenPort = {int(mesh.get('listen_port') or config.MESH_PORT)}"]
+    mnet = _net(address)
+    dev = net.egress_device()
+    lines = [
+        "[Interface]",
+        f"Address = {address}",
+        f"ListenPort = {int(mesh.get('listen_port') or config.MESH_PORT)}",
+        f"PrivateKey = {mesh['private_key']}",
+        "Table = off",
+        "PostUp = iptables -A FORWARD -i %i -j ACCEPT",
+        "PostUp = iptables -A FORWARD -o %i -m state --state ESTABLISHED,RELATED -j ACCEPT",
+        "PostDown = iptables -D FORWARD -i %i -j ACCEPT",
+        "PostDown = iptables -D FORWARD -o %i -m state --state ESTABLISHED,RELATED -j ACCEPT",
+    ]
+    if mnet:
+        lines.append(f"PostUp = iptables -t nat -A POSTROUTING -s {mnet} -o {dev} -j MASQUERADE")
+        lines.append(f"PostDown = iptables -t nat -D POSTROUTING -s {mnet} -o {dev} -j MASQUERADE")
     for p in peers:
         pa = str(p.get("address") or "").split("/")[0]
         if not pa:
             continue
-        lines += ["[Peer]", f"PublicKey = {p['public_key']}", f"AllowedIPs = {pa}/32"]
-    with tempfile.NamedTemporaryFile("w", suffix=".conf", delete=False) as fh:
+        lines += ["", "[Peer]", f"PublicKey = {p['public_key']}", f"AllowedIPs = {pa}/32"]
+
+    await down(mesh)
+    path = _conf_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")
-        conf_path = fh.name
-    try:
-        os.chmod(conf_path, 0o600)
-        await _run("wg", "setconf", IFACE, conf_path)
-    finally:
-        os.unlink(conf_path)
-
-    await _run("ip", "address", "add", address, "dev", IFACE, quiet=True)
-    await _run("ip", "link", "set", IFACE, "up")
-
-    # Форвардинг трафика соседей и NAT в интернет нашим адресом. До наших
-    # ресурсов (апстримов) SNAT уже висит на их интерфейсах.
-    await _run("iptables", "-A", "FORWARD", "-i", IFACE, "-j", "ACCEPT", quiet=True)
-    await _run("iptables", "-A", "FORWARD", "-o", IFACE, "-m", "state",
-               "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT", quiet=True)
-    if net:
-        await _run("iptables", "-t", "nat", "-C", "POSTROUTING", "-s", net,
-                   "-o", dev, "-j", "MASQUERADE", quiet=True)
-        await _run("iptables", "-t", "nat", "-A", "POSTROUTING", "-s", net,
-                   "-o", dev, "-j", "MASQUERADE", quiet=True)
+    os.chmod(path, 0o600)
+    ok, err = await _run(config.BIN_QUICK, "up", path)
+    if not ok:
+        logger.error("mesh: listener не поднялся: %s", err)
+        return
     logger.info("mesh: listener на %s, пиров %d", address, len(peers))
 
 
 async def status(mesh: dict[str, Any]) -> dict[str, Any]:
     """Живость: поднят ли интерфейс и хендшейки с пирами."""
-    ok, dump = await _run("wg", "show", IFACE, "dump", quiet=True)
+    ok, dump = await _run(config.BIN, "show", IFACE, "dump", quiet=True)
     up = ok
     peers: dict[str, Any] = {}
     if ok:
