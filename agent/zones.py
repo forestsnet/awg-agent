@@ -164,9 +164,10 @@ async def _apply_routing(
     plan = []
     for client in clients:
         address = str(client.get("address") or "").split("/")[0]
-        name = exit_of(zone_of(client, zones))
+        zone = zone_of(client, zones)
+        name = exit_of(zone)
         if address and name and name in table_of:
-            plan.append((address, name, table_of[name]))
+            plan.append((address, name, table_of[name], zone))
     if not plan and not _routing_installed:
         # Выходных нод не было и нет: обычный сервер про политики
         # маршрутизации знать не должен вовсе.
@@ -176,12 +177,21 @@ async def _apply_routing(
     _routing_installed = bool(plan)
     routed = 0
     priority = RULE_PRIORITY_BASE
-    for address, name, table in plan:
+    for address, name, table, zone in plan:
         iface = upstream.iface_of(name)
         # default в своей таблице: основную не трогаем вовсе, иначе
         # туда же уедет и трафик самого сервера.
         await _run("ip", "route", "replace", "default", "dev", iface,
                    "table", str(table), quiet=True)
+        # Подсети зоны — через их upstream, в ту же таблицу выхода. Иначе,
+        # когда ресурс на одном узле, а выход на другом, default выхода
+        # перекрывает маршрут к ресурсу и доступ пропадает.
+        up_name = zone.get("upstream") if zone else None
+        if up_name and up_name != name and up_name in table_of:
+            up_iface = upstream.iface_of(up_name)
+            for cidr in (zone.get("cidrs") or []):
+                await _run("ip", "route", "replace", cidr, "dev", up_iface,
+                           "table", str(table), quiet=True)
         await _run("ip", "rule", "add", "from", f"{address}/32",
                    "lookup", str(table), "priority", str(priority))
         priority += 1
