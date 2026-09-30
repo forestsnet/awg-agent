@@ -27,6 +27,7 @@ ENV AGENT_BUILD=${BUILD_SHA} \
 
 EXPOSE 51820/udp
 EXPOSE 51821/tcp
+EXPOSE 51822/udp
 
 # exec, чтобы uvicorn получил сигналы от dumb-init напрямую и контейнер
 # останавливался за секунду, а не по таймауту.

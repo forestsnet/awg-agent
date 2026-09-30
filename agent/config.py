@@ -140,3 +140,8 @@ TORRENT_BLOCK_DURATION = _int("TORRENT_BLOCK_DURATION", 3600)
 USERLOG_MAX_BYTES = _int("USERLOG_MAX_BYTES", 5 * 1024 * 1024)
 USERLOG_KEEP = _int("USERLOG_KEEP", 5)
 USERLOG_SNAPSHOT_SECONDS = _int("USERLOG_SNAPSHOT_SECONDS", 900)
+
+# Mesh между агентами: in-container listener для линков (сосед достаёт
+# наши ресурсы/выход). Порт публикуется контейнером, адрес задаёт контроллер.
+MESH_PORT = _int("MESH_PORT", 51822)
+MESH_ADDRESS = os.environ.get("MESH_ADDRESS", "").strip()

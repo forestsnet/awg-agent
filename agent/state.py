@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-from . import awg, config, journal, proto, quota, render, shaper, torrent, upstream, userlog, zones
+from . import awg, config, journal, mesh, proto, quota, render, shaper, torrent, upstream, userlog, zones
 
 logger = logging.getLogger("state")
 
@@ -63,6 +63,8 @@ class Store:
         self.events: list[dict[str, Any]] = []
         # Конфиг торрент-блокировщика: webhook_url/secret, node_name, block_duration, enabled.
         self.torrent: dict[str, Any] = {}
+        # Mesh-linkи с соседними агентами (listener + пиры).
+        self.mesh: dict[str, Any] = {}
         self._lock = asyncio.Lock()
         # Срезы трафика для персонального лога: client_id -> (ts, rx, tx).
         self._log_snap: dict[str, tuple[float, int, int]] = {}
@@ -80,12 +82,14 @@ class Store:
             self.upstreams = data.get("upstreams") or []
             self.events = data.get("events") or []
             self.torrent = data.get("torrent") or {}
+            self.mesh = data.get("mesh") or {}
             logger.info("состояние загружено: клиентов %d", len(self.clients))
         elif os.path.exists(config.LEGACY_STATE_PATH):
             await self._import_legacy()
         if not self.server:
             await self._init_server()
         self._seed_torrent()
+        await mesh.seed(self.mesh)
         for c in self.clients:
             c.setdefault("telegram_id", None)
             c.setdefault("email", None)
@@ -221,6 +225,7 @@ class Store:
                 "upstreams": self.upstreams,
                 "events": self.events,
                 "torrent": self.torrent,
+                "mesh": self.mesh,
             },
             ensure_ascii=False,
             indent=1,
@@ -279,6 +284,11 @@ class Store:
                 await torrent.teardown()
         except Exception:  # noqa: BLE001
             logger.exception("btguard не применился")
+        # Mesh-listener: поднимаем, если есть линки к соседним агентам.
+        try:
+            await mesh.apply(self.mesh, self.upstreams)
+        except Exception:  # noqa: BLE001
+            logger.exception("mesh не применился")
 
     # ── Резервная копия ─────────────────────────────────────────────
 
@@ -796,6 +806,42 @@ class Store:
             userlog.purge(client["id"])
             self._log_snap.pop(client.get("id"), None)
             return True
+
+    # ── Mesh между агентами ──────────────────────────────────────────
+
+    async def set_mesh(self, patch: dict[str, Any]) -> dict[str, Any]:
+        async with self._lock:
+            for k in ("address", "listen_port"):
+                if k in patch and patch[k] is not None:
+                    self.mesh[k] = patch[k]
+            await mesh.seed(self.mesh)
+            await self.persist_state()
+        await self.reapply()
+        return mesh.public(self.mesh)
+
+    async def add_mesh_peer(self, name: str, public_key: str,
+                            address: str) -> bool:
+        async with self._lock:
+            await mesh.seed(self.mesh)
+            peers = [p for p in self.mesh.get("peers") or []
+                     if p.get("name") != name]
+            peers.append({"name": name, "public_key": public_key,
+                          "address": address})
+            self.mesh["peers"] = peers
+            await self.persist_state()
+        await self.reapply()
+        return True
+
+    async def del_mesh_peer(self, name: str) -> bool:
+        async with self._lock:
+            peers = self.mesh.get("peers") or []
+            keep = [p for p in peers if p.get("name") != name]
+            if len(keep) == len(peers):
+                return False
+            self.mesh["peers"] = keep
+            await self.persist_state()
+        await self.reapply()
+        return True
 
     # ── Учёт трафика и применение лимитов ───────────────────────────
 

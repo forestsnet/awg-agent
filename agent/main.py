@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import (REPO_URL, __build__, __version__, auth, awg, config,
-               journal, net, quota, render, shaper, torrent, upstream, zones)
+               journal, mesh, net, quota, render, shaper, torrent, upstream, zones)
 from .state import store
 
 logging.basicConfig(
@@ -77,6 +77,17 @@ class TorrentConfigIn(BaseModel):
 
 class UserLogIn(BaseModel):
     enabled: bool = False
+
+
+class MeshPatch(BaseModel):
+    address: Optional[str] = Field(default=None, max_length=64)
+    listen_port: Optional[int] = Field(default=None, ge=1, le=65535)
+
+
+class MeshPeerIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+    public_key: str = Field(..., min_length=40, max_length=64)
+    address: str = Field(..., min_length=7, max_length=64)
 
 
 class QuotaIn(BaseModel):
@@ -583,6 +594,31 @@ async def torrent_set(payload: TorrentConfigIn) -> dict[str, Any]:
     cfg = await store.set_torrent_config(patch)
     return {"success": True, "webhookConfigured": torrent.configured(cfg),
             "active": await torrent.loaded()}
+
+
+@app.get("/api/mesh", dependencies=[Depends(_authed)])
+async def mesh_get() -> dict[str, Any]:
+    await mesh.seed(store.mesh)
+    return {**mesh.public(store.mesh), "status": await mesh.status(store.mesh)}
+
+
+@app.put("/api/mesh", dependencies=[Depends(_authed)])
+async def mesh_set(payload: MeshPatch) -> dict[str, Any]:
+    patch = {k: v for k, v in payload.model_dump().items() if v is not None}
+    return await store.set_mesh(patch)
+
+
+@app.post("/api/mesh/peers", dependencies=[Depends(_authed)])
+async def mesh_peer_add(payload: MeshPeerIn) -> dict[str, Any]:
+    await store.add_mesh_peer(payload.name, payload.public_key, payload.address)
+    return {"success": True}
+
+
+@app.delete("/api/mesh/peers/{name}", dependencies=[Depends(_authed)])
+async def mesh_peer_del(name: str) -> dict[str, Any]:
+    if not await store.del_mesh_peer(name):
+        raise HTTPException(status_code=404, detail="Пир не найден")
+    return {"success": True}
 
 
 @app.get("/api/zones", dependencies=[Depends(_authed)])
