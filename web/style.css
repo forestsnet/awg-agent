@@ -24,6 +24,10 @@
   --danger:#ef4444;
   --font-sans:"TT Interfaces",Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
   --font-mono:"JetBrains Mono","SF Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  /* Пять круглых кнопок по 36px с зазорами 8px. Прибито числом, потому
+     что шапка сортировки — отдельная сетка, а при `auto` колонки двух
+     сеток считаются по своему содержимому и подписи уезжают. */
+  --actions-w:212px;
 }
 :root[data-theme="dark"]{
   color-scheme:dark;
@@ -153,7 +157,7 @@ header{
 main{padding:18px 24px 56px}
 .list{display:flex;flex-direction:column;gap:10px}
 .row{
-  display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1.1fr) minmax(0,1.2fr) auto;
+  display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1.1fr) minmax(0,1.2fr) var(--actions-w);
   align-items:center;gap:18px;background:var(--backgrounds-cards);
   border:1px solid var(--border);border-radius:24px;padding:14px 18px;
   transition:border-color .18s ease;
@@ -177,6 +181,22 @@ main{padding:18px 24px 56px}
 .traffic .val svg{color:var(--text-secondary)}
 .traffic .rate{font-size:12px;color:var(--text-secondary);min-height:15px;padding-left:22px}
 .row-actions{display:flex;gap:8px;justify-content:flex-end}
+
+/* Шапка сортировки. Отступ слева 19px — padding строки плюс её рамка,
+   иначе подписи не встают над своими значениями. */
+.sortbar{
+  display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1.1fr) minmax(0,1.2fr) var(--actions-w);
+  align-items:start;gap:18px;padding:0 19px 10px;
+}
+.sortbar .sb-cell{display:flex;flex-wrap:wrap;align-items:center;gap:2px 12px;min-width:0}
+.sortbar .sb-end{justify-content:flex-end}
+.sortbar button{
+  padding:2px 0;gap:1px;border:0;border-radius:0;background:none;
+  font-size:12px;font-weight:500;color:var(--text-secondary);
+}
+.sortbar button:hover{transform:none;color:var(--text-primary)}
+.sortbar button.active{color:var(--accent);font-weight:600}
+.sortbar .ind{display:inline-flex;width:12px;height:12px;align-items:center}
 
 /* Лимит показываем только у тех, кому он задан: пустая полоска у всех
    остальных — визуальный шум. */
@@ -277,6 +297,10 @@ select:focus{border-color:var(--accent)}
 @media (max-width:900px){
   .stats{grid-template-columns:repeat(2,1fr)}
   .row{grid-template-columns:minmax(0,1fr) auto;gap:12px}
+  /* На узком экране колонки разъезжаются по строкам, и держать подписи
+     сеткой уже незачем — просто полоса пунктов с переносом. */
+  .sortbar{display:flex;flex-wrap:wrap;gap:2px 12px;padding:0 4px 12px}
+  .sortbar .sb-cell{display:contents}
   .row .shake,.row .traffic{grid-column:1/-1}
   header{flex-direction:column;align-items:stretch;gap:12px}
   .actions{flex:1}

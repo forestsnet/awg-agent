@@ -11,6 +11,8 @@
  */
 
 const ICONS = {
+  caretUp: '<path d="m18 15-6-6-6 6"/>',
+  caretDown: '<path d="m6 9 6 6 6-6"/>',
   shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
   search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
@@ -53,6 +55,7 @@ const $ = (id) => document.getElementById(id);
 const state = {
   clients: [], filter: '', timer: null,
   prev: new Map(), totals: { rx: 0, tx: 0, at: 0 }, confirm: null,
+  sort: null,
 };
 
 /* ── Транспорт ──────────────────────────────────────────────────── */
@@ -189,6 +192,88 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && state.timer) refresh();
 });
 
+/* ── Сортировка ─────────────────────────────────────────────────── */
+
+const stamp = (iso) => (iso ? new Date(iso).getTime() || null : null);
+
+// Адреса сравниваем по октетам, иначе 10.8.0.10 встаёт выше 10.8.0.9.
+// Ключ строковый, с ведущими нулями: тип один и для IPv4, и для всего
+// остального, что может оказаться в поле.
+function ipKey(addr) {
+  const first = String(addr || '').split(',')[0].trim().split('/')[0];
+  const parts = first.split('.');
+  if (parts.length === 4 && parts.every((o) => /^\d{1,3}$/.test(o)))
+    return parts.map((o) => o.padStart(3, '0')).join('.');
+  return first.toLowerCase();
+}
+
+// Сортируем по тому, что видно в строке. `dir` — направление первого
+// клика: имена и адреса по возрастанию, числа и время от большего,
+// срок действия от ближайшего — чаще всего нужно именно так.
+const SORTS = {
+  name:  { dir:  1, get: (c) => (c.name || '').trim() },
+  addr:  { dir:  1, get: (c) => ipKey(c.address) },
+  rate:  { dir: -1, get: (c) => c.rateBps || 0 },
+  quota: { dir: -1, get: (c) => (c.quotaBytes ? (c.quotaUsed || 0) / c.quotaBytes : null) },
+  till:  { dir:  1, get: (c) => stamp(c.expiresAt) },
+  shake: { dir: -1, get: (c) => stamp(c.latestHandshakeAt) },
+  rx:    { dir: -1, get: (c) => c.transferRx || 0 },
+  tx:    { dir: -1, get: (c) => c.transferTx || 0 },
+  total: { dir: -1, get: (c) => (c.transferRx || 0) + (c.transferTx || 0) },
+  state: { dir: -1, get: (c) => (c.enabled ? 1 : 0) },
+};
+
+// Пустое значение уходит вниз в обе стороны: клиент без квоты не должен
+// всплывать первым, когда смотришь, у кого лимит на исходе. Равные
+// значения добиваем именем, иначе порядок внутри группы случайный.
+function comparator({ key, dir }) {
+  const get = SORTS[key].get;
+  const byName = (a, b) => (a.name || '').localeCompare(b.name || '', 'ru');
+  return (a, b) => {
+    const x = get(a);
+    const y = get(b);
+    const xe = x === null || x === undefined || x === '';
+    const ye = y === null || y === undefined || y === '';
+    if (xe || ye) return xe && ye ? byName(a, b) : (xe ? 1 : -1);
+    const cmp = typeof x === 'string' ? x.localeCompare(y, 'ru')
+      : (x < y ? -1 : x > y ? 1 : 0);
+    return cmp ? dir * cmp : byName(a, b);
+  };
+}
+
+function paintSortbar() {
+  for (const btn of $('sortbar').querySelectorAll('button[data-sort]')) {
+    const on = !!state.sort && state.sort.key === btn.dataset.sort;
+    btn.classList.toggle('active', on);
+    btn.querySelector('.ind').innerHTML =
+      on ? icon(state.sort.dir > 0 ? 'caretUp' : 'caretDown', 12) : '';
+  }
+}
+
+// Первый клик — направление по умолчанию, второй — обратное, третий
+// снимает сортировку и возвращает порядок, в котором строки отдал агент.
+$('sortbar').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-sort]');
+  if (!btn || !SORTS[btn.dataset.sort]) return;
+  const key = btn.dataset.sort;
+  const cur = state.sort;
+  state.sort = !cur || cur.key !== key ? { key, dir: SORTS[key].dir }
+    : cur.dir === SORTS[key].dir ? { key, dir: -cur.dir }
+    : null;
+  if (state.sort) localStorage.setItem('sort', `${state.sort.key}:${state.sort.dir}`);
+  else localStorage.removeItem('sort');
+  paintSortbar();
+  render();
+});
+
+// Выбор держим в браузере: порядок строк — привычка админа, а не
+// настройка узла, и переживать перелогин она должна.
+(() => {
+  const [key, dir] = String(localStorage.getItem('sort') || '').split(':');
+  if (SORTS[key] && (dir === '1' || dir === '-1')) state.sort = { key, dir: Number(dir) };
+  paintSortbar();
+})();
+
 /* ── Отрисовка ──────────────────────────────────────────────────── */
 
 function applyBrand(vpn) {
@@ -293,12 +378,19 @@ function rowTemplate(id) {
 
 function render() {
   const q = state.filter.trim().toLowerCase();
-  const list = q
+  let list = q
     ? state.clients.filter((c) =>
         c.name.toLowerCase().includes(q) || (c.address || '').includes(q))
     : state.clients;
 
+  // Копией: без фильтра `list` — это сам state.clients, и сортировка на
+  // месте переставляла бы массив, который в этот момент перезаписывает
+  // опрос. Порядок считаем здесь, а не на агенте: дёргать его на каждый
+  // клик по подписи незачем.
+  if (state.sort) list = [...list].sort(comparator(state.sort));
+
   $('empty').classList.toggle('hidden', state.clients.length > 0);
+  $('sortbar').classList.toggle('hidden', state.clients.length === 0);
 
   const box = $('rows');
   const now = Date.now();

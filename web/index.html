@@ -82,6 +82,29 @@
       <div class="badge" data-icon="users" data-size="24"></div>
       Пока никого
     </div>
+    <!-- Шапка сортировки. Сетка та же, что у .row, поэтому подписи стоят
+         ровно над своими колонками: имя, адрес, скорость, квота и срок
+         живут в первой, активность во второй, трафик в третьей. -->
+    <div id="sortbar" class="sortbar hidden">
+      <div class="sb-cell">
+        <button data-sort="name">Имя<span class="ind"></span></button>
+        <button data-sort="addr">Адрес<span class="ind"></span></button>
+        <button data-sort="rate">Скорость<span class="ind"></span></button>
+        <button data-sort="quota">Лимит<span class="ind"></span></button>
+        <button data-sort="till">Срок<span class="ind"></span></button>
+      </div>
+      <div class="sb-cell">
+        <button data-sort="shake">Активность<span class="ind"></span></button>
+      </div>
+      <div class="sb-cell">
+        <button data-sort="rx">Принято<span class="ind"></span></button>
+        <button data-sort="tx">Отдано<span class="ind"></span></button>
+        <button data-sort="total">Всего<span class="ind"></span></button>
+      </div>
+      <div class="sb-cell sb-end">
+        <button data-sort="state">Состояние<span class="ind"></span></button>
+      </div>
+    </div>
     <div id="rows" class="list"></div>
   </main>
 

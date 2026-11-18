@@ -1,7 +1,7 @@
 """forestsnet awg-agent."""
 import os
 
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 
 # Короткий хэш коммита, из которого собран образ. Проставляет CI через
 # --build-arg BUILD_SHA; локальная сборка честно говорит «dev».
